@@ -10,3 +10,10 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+### UCL_Task
+# tasks/*.md 與 _index.txt 是**事實來源**，要入版控；
+# 這個是 Cmd 的回傳檔（每次操作整份覆寫），不是事實來源。
+# 🩸 2026-08-24 獨立成 repo 時這條 ignore 沒跟著搬過來 ——
+#   規則住在舊 repo 的 .gitignore 裡，而搬家只搬了資料。
+#   「產生端與收取端是兩張表」：新增一個放資料的地方，就要同時搬「誰不收」那張。
+_last_task_report.md
