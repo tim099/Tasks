@@ -1,0 +1,13 @@
+{
+  "Enabled": true,
+  "Name": "Tasks",
+  "Groups": [
+    {
+      "Key": "tickets",
+      "Label": "任務單與索引（tasks/<idx>.md ＋ _index.txt，Cmd_Task 寫入）",
+      "MatchPrefixes": [ "tasks/", "_index.txt" ],
+      "Message": "chore(task): sync task tickets (auto)",
+      "DefaultOn": true
+    }
+  ]
+}
