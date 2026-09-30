@@ -17,3 +17,7 @@ $RECYCLE.BIN/
 #   規則住在舊 repo 的 .gitignore 裡，而搬家只搬了資料。
 #   「產生端與收取端是兩張表」：新增一個放資料的地方，就要同時搬「誰不收」那張。
 _last_task_report.md
+
+# 寫入端的跨 process 檔案鎖（TASK-0349，`SCP_FileLock` 鎖 `_index.txt` 旁邊這一顆）——
+# 它是**開著的握把**，內容永遠是空的；不是事實來源，也不該被 commit（別的機器 pull 下來不代表誰在寫）。
+_index.txt.lock
