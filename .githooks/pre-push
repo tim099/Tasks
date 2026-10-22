@@ -1,0 +1,5 @@
+#!/bin/sh
+# 區塊職責：推到 dev、main 之前擋「那一版的成品跟來源對不上」（TASK-0674）—— fast-forward 合併不經過 pre-commit，擋在這裡。
+# git 從 stdin 給「本地 ref、本地 sha、遠端 ref、遠端 sha」，原樣交給 admin.py。
+command -v python >/dev/null 2>&1 || { echo "成品檢查：找不到 python，沒檢查"; exit 0; }
+exec python -I src/admin.py srccheck --hook pre-push
