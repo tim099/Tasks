@@ -525,9 +525,10 @@
     <div class="note">畫質的細項：上面的「畫質設定…」（主選單也有）；物理的細項在主選單的「物理設定…」；血量、傷害、浪、天氣在開戰前設定；物理效果裡的「進水」（公式／粒子）下一場生效</div>
   </div>
 
+  <!--bs-ui--><!-- Blockside 的外殼（主選單、設定頁、確認彈窗；TASK-0774 第 5 步）：#cover 整塊。核心不碰這一塊的 DOM（admin.py layers --shell）；畫質設定是核心自己的一層 #gfxov，在這一塊外面 -->
   <div id="cover">
     <button id="pgX" aria-label="返回主選單">返回</button><div id="askp" role="dialog" aria-modal="true" aria-labelledby="askT"><div class="panel askc"><h2 id="askT"></h2><div id="askM"></div><div class="row"><button id="askN">取消</button><button id="askY">確定</button></div></div></div><!-- 細節、畫質、物理、船隻配置頁：右上角固定的返回（Tim 2026-10-14：不用捲到底才按得到、不跟著捲） -->
-    <div class="card panel">
+    <div class="card panel" id="menuCard">
       <h1>Blockside</h1><!-- Tim 2026-10-16：「網頁中的遊戲名稱 可以改成Blockside了」（存檔鍵 ame_constitution_broadside、匯出檔名照舊 ⇒ 舊存檔照樣讀得到） -->
       <div class="row" id="modes"><!-- 玩法鈕由 js/71_input.js modeButtons 照 js/04_modes.js 的 MODE_RULES 生 --></div>
       <div class="row" id="plays">玩法
@@ -767,6 +768,7 @@
       <div class="row"><button id="detR">重設預設值</button><button id="detX" class="on">返回</button></div>
     </div>
   </div>
+  <!--/bs-ui-->
   <div id="gfxov" style="display:none">
     <button id="gfxovX" aria-label="返回">返回</button>
     <!-- 畫質設定（主選單的「畫質設定…」與遊戲中的設定面板都開這一層；TASK-0522、TASK-0774）：每一項的檔位在 js/07_gfx.js 的 GFX_ITEMS，按鈕由 js/71_input.js 生 -->

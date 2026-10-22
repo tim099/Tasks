@@ -100,3 +100,9 @@ $('go').onclick = start;
 /** 回到主選單（'menu'、結束畫面的「主選單」）：?start=1 開場時沒照載好的船型重畫主選單（90_main.js：主選單不會出來 ⇒ 不佔開場）⇒ 第一次回來才補畫。 */
 var COVER_LATE = START_Q;
 function coverShow() { $('cover').style.display = ''; if (COVER_LATE && SLIDERS_SHOW) { COVER_LATE = false; SLIDERS_SHOW(); } }
+// __game（DEBUG 的量測入口，90_main.js）裡屬於主選單的那幾項：開機時核心發 game:api ⇒ 掛上去（TASK-0774 第 4 步）
+evOn('game:api', function (G) {
+  G.menuFleet = function (F) { if (F) { FLEET_SET = fleetTrim(F.map(function (L) { return L.slice(); })); fleetUI(); pickShip(); } return { set: FLEET_SET, spec: fleetSpec(), html: [$('fleet0').innerHTML.length, $('fleet1').innerHTML.length] }; };
+  var rp = G.roomPlans; G.roomPlans = function (id, type) { return rp(id || CFG_ID, type); };   // 沒給船型 ⇒ 主選單「船隻配置」正在編的那一型
+});
+evOn('cfg:ships', function () { if (SLIDERS_SHOW) SLIDERS_SHOW(); });   // 船隻配置改了（__game.roomSet、shipsIO.imp）⇒ 主選單重畫

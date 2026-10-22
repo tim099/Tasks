@@ -64,7 +64,6 @@ if (DEBUG) window.__game = {
   gpu: function () { render(); function ix(L) { return L.map(function (s) { return s.i; }); } return { max: MAX_SHIPS, masks: GFX.masks, mask: ix(MSLOTS), noMask: ix(MSLOTS.rest), layers: SHM.layers, shadowN: SHM.n, hullLayers: HULLA.key, err: gl.getError() }; },   // GPU 的格（60_render.js gpuSlots：船艙遮罩）
   shadow: function () { render(); return SHM ? { on: SHM.on, n: SHM.n, k: SHM.k, land: SHM.stOn, splits: SHM.splits.map(function (v) { return +v.toFixed(1); }), cs: SHM.cs.map(function (c) { return { r: c.r, C: c.C.map(function (v) { return +v.toFixed(1); }), off: +c.off.toFixed(3), t: +c.t.toFixed(2) }; }), ms: SHM.stat.ms, redraws: SHM.stat.redraws, last: SHM.stat.last } : null; },   // 陰影（60_render.js shadowPass）：幾段、每段的遠端、範圍、這一格畫陰影花幾毫秒、靜態那一層重畫過幾次與上一次
   cut: function (o) { if (o) for (var k in o) CUTV[k] = o[k]; render(); return CUTV; },     // 剖面與隱藏甲板（74_cutaway.js）：{ half, deck }
-  menuFleet: function (F) { if (F) { FLEET_SET = fleetTrim(F.map(function (L) { return L.slice(); })); fleetUI(); pickShip(); } return { set: FLEET_SET, spec: fleetSpec(), html: [$('fleet0').innerHTML.length, $('fleet1').innerHTML.length] }; },
   prefs: function (p) { if (p) prefsApply(p); return prefsSnap(); },   // 存檔：套進去（有給）⇒ 現在跟預設不一樣的那幾項（69_prefs.js；?prefs=0 時不碰瀏覽器的存檔）
   ev: function (t, off) { if (off) return evOff(t); var o = {}; for (var k in EV_SUB) if (!t || k === t) o[k] = EV_SUB[k].length; return o; },   // 事件（00_events.js）：每個事件幾個訂閱；off ⇒ 拿掉事件 t 的訂閱（反向對照：拿掉 note ⇒ 照打、沒有廣播）
   /** 砲門（TASK-0719；62_ports.js）：ports(i) ⇒ 第 i 艘每片蓋板的 s（0 關、1 開／砲縮著、2 砲推出去）、want、gone、house…；portsForce(i, 0｜1｜null) ⇒ 寫 sh.portWant（截圖、宣傳片用；null ⇒ 照規則）。 */
@@ -115,7 +114,7 @@ if (DEBUG) window.__game = {
   gunDirs: function (i) { return SHIPS[i || 0].guns.map(function (g) { return [g.name.split('/').pop(), g.type, g.ax.map(function (v) { return +v.toFixed(2); }), gunDir(g)]; }); },
   /** 艙房的擺法（TASK-0568；船型要先載好）：每一間的格子（nx×ny、門口走道幾格、站不住幾格）、type ⇒ 那個類型自動擺滿的結果、now ⇒ 現在照擺法擺上的；ms ＝ 全部算一次幾毫秒（不記）。 */
   roomPlans: function (id, type) {
-    var T = HULLT[id || CFG_ID]; if (!T) return null;
+    var T = HULLT[id || myHull()]; if (!T) return null;          // 沒給船型 ⇒ 我艦那一型（外殼 71_menu.js 包一層：主選單正在編的那一型）
     var t0 = performance.now(), out = hullRooms(T).map(function (r) {
       r.autoC = null; var G = roomGrid(T, r), a = type ? roomAuto(T, r, type) : null, I = roomItems(T, r, roomPlan(T.id, r.name)), n = [0, 0, 0];
       for (var k = 0; k < G.s.length; k++) n[G.s[k]]++;
@@ -125,7 +124,7 @@ if (DEBUG) window.__game = {
     return { ms: +(performance.now() - t0).toFixed(1), rooms: out };
   },
   /** 改一間的擺法（v：null ＝ 空著、{ type } ＝ 自動擺滿、{ type, items } ＝ 自訂）⇒ 照驗過的擺上去的結果。 */
-  roomSet: function (id, name, v) { (SHIP_ROOMS[id] = SHIP_ROOMS[id] || {})[name] = v; if (SLIDERS_SHOW) SLIDERS_SHOW(); var T = HULLT[id], r = T && hullRooms(T).filter(function (x) { return x.name === name; })[0]; return r ? roomItems(T, r, roomPlan(id, name)) : null; },
+  roomSet: function (id, name, v) { (SHIP_ROOMS[id] = SHIP_ROOMS[id] || {})[name] = v; evEmit('cfg:ships'); var T = HULLT[id], r = T && hullRooms(T).filter(function (x) { return x.name === name; })[0]; return r ? roomItems(T, r, roomPlan(id, name)) : null; },
   /** 打第 i 艘那一間的第 k 件物品 dmg 點（跟砲同一套 damageModel；歸零 ⇒ 飛出去）⇒ 那一間打完的讀數。 */
   blow: function (i, name, sp) {   // 打掉第 i 艘名字含 name 的第一個模型（照 21_gunnery.js blowModel 的演出：blowStyle；TASK-0751）；sp ＝ 砲彈速度 m/s（預設 400，從 +y 舷打過來）⇒ 回 FLY 那一筆的初速與角速度
     var sh = SHIPS[i || 0], m = sh.models.filter(function (o) { return o.alive && (o.name === name || o.path.indexOf(name) >= 0); })[0]; if (!m) return null;
@@ -158,7 +157,7 @@ if (DEBUG) window.__game = {
   galley: function (i, op) { var sh = SHIPS[i || 0]; if (op === 'kill') galleyKill(sh); return galleyInfo(sh); },   // 廚房（45_galley.js；TASK-0720）：{ cooks, stock, made, served, going, eff, fed, rk, effT, news, stoves[{…why}], skip }；沒有廚房 ⇒ 排掉的原因或 null；(i, 'kill') ＝ 把那艘的廚師全打倒（量斷炊）
   pumps: function (i) { return pumpInfo(SHIPS[i || 0]); },   // 抽水（45_pumps.js）：基礎、現在全船幾噸／分、每台抽水機的狀態與原因   // 醫療艙（44_medic.js）：每一間的床、人手、搬下去、治好歸隊
   rooms: function (on) { if (on !== undefined) { ROOMS_DBG = !!on; if (!on) roomLabels(); } return roomsInfo(); },   // 空艙房（36_rooms.js）：讀數；給 true／false ⇒ 開關外框與名字
-  shipsIO: { exp: function () { return shipsExport(); }, imp: function (o) { var n = shipsImport(o); SLIDERS_SHOW && SLIDERS_SHOW(); return n; }, crew: function (id) { return shipCrew(id); }, seen: function () { return CREW_SEEN; } },   // 船隻配置的匯出入（TASK-0570；量的時候不必真的下載檔案）
+  shipsIO: { exp: function () { return shipsExport(); }, imp: function (o) { var n = shipsImport(o); evEmit('cfg:ships'); return n; }, crew: function (id) { return shipCrew(id); }, seen: function () { return CREW_SEEN; } },   // 船隻配置的匯出入（TASK-0570；量的時候不必真的下載檔案）
   fp: function (on, to, yaw) { if (on !== undefined && on !== null) fpSet(!!on); if (yaw !== undefined && FP.on) { FP.yaw = yaw; FP.pitch = 0; } if (to === 'lad' && FP.lads && FP.lads.length) to = FP.lads[0].up[0]; if (to && FP.c) { var sz = -1; for (var dz = 0; dz <= 12 && sz < 0; dz++) { sz = standZ(fpG(FP.sh), Math.floor(to[0]), Math.floor(to[1]), to[2] - dz, to[2] + dz, NAV_HEAD); } if (sz >= 0) { FP.c.pos = [to[0], to[1], sz]; FP.ez = null; FP.jz = FP.jv = 0; FP.v = [0, 0]; FP.climb = null; } } var c = FP.c; return { on: FP.on, mode: FP.mode, eo: +FP.eo.toFixed(2), paused: PAUSED, fol: FP.fol ? { role: FP.fol.role, pos: FP.fol.pos.map(function (v) { return +v.toFixed(2); }) } : null, jz: +FP.jz.toFixed(2), ez: FP.ez === null ? null : +FP.ez.toFixed(2), v: FP.v.map(function (x) { return +x.toFixed(2); }), pos: c ? c.pos.map(function (v) { return +v.toFixed(2); }) : null, yaw: +FP.yaw.toFixed(3), pitch: +FP.pitch.toFixed(3), near: FP.near ? { name: FP.near.name, up: FP.near.up } : null, climb: FP.climb ? FP.climb.k : null, lads: (FP.lads || []).map(function (L) { return L.name + ' ' + L.up[0].join(',') + '→' + L.up[L.up.length - 1].join(','); }), mv: Object.assign({}, FP.mv) }; },   // 第一人稱（81_fps.js）：讀數；fp(1)／fp(0) 開關；fp(null, [x,y,z]｜'lad') 瞬移（'lad' ＝ 第一座梯子的梯腳；貼到 ±12 格內最近的地板，找不到就不移 —— ⛔ 懸空 ⇒ survey 判成掉下去、摔傷）—— 量的時候用
   fpRun: function (sec) { for (var t = 0; t < sec; t += 1 / 60) fpFrame(1 / 60); return this.fp(); },   // 第一人稱照每秒 60 格推 sec 秒（畫面迴圈不跑時量走路用：預覽窗格藏著、無頭瀏覽器；TASK-0655）
   fpMap: function (r) {   // 第一人稱：船長周圍 ±r 格每一柱站不站得住（照 81_fps.js fpStand；. 站不住、數字 ＝ 腳底比現在高幾格、@ 自己）—— 量的時候用
@@ -439,6 +438,7 @@ if (DEBUG) window.__game = {
     knots: +(s.spd * 1.944).toFixed(2), yaw: +s.yaw.toFixed(3), x: +s.px.toFixed(1), z: +s.pz.toFixed(1), sail: +s.sailFrac.toFixed(3), point: s.pos,
     side: s.side, manual: s.manual, rudder: +s.rudder.toFixed(2), sailSet: SAILSETS[s.sailSet] }; }), over: OVER, end: OVER ? $('endT').textContent : '', pieces: PIECES.map(function (p) { return p.n; }), debris: D.n, pts: PT.n, balls: BALLS.length, masts: SHIPS.length ? SHIPS[0].T.masts : [] }; }
 };
+if (DEBUG) evEmit('game:api', window.__game);   // 外殼（71_menu.js）掛它自己的那幾項（menuFleet、roomPlans 的預設；TASK-0774）
 /** 讀數的一段：這艘船是讀快取還是現場解析（06_cache.js）。 */
 function cacheText(st) { return !st ? '' : st.hit ? '（讀快取 ' + (st.readMs / 1000).toFixed(2) + ' 秒）' : '（現場解析；' + st.why + '）'; }
 if (DEBUG) {
