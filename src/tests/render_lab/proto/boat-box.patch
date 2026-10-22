@@ -1,0 +1,113 @@
+diff --git a/src/js/62_shell.js b/src/js/62_shell.js
+index e7f5d19..fe19526 100644
+--- a/src/js/62_shell.js
++++ b/src/js/62_shell.js
+@@ -15,7 +15,7 @@
+ //     頂點色欄 (−1−u, v, 層) ⇒ 模型的著色器（01_gl.js TRI_FS）照貼圖取色（最近的那一格 ⇒ 方塊的顏色邊）。
+ //   · 殼以外的格（座板、收著的槳、槳座、地板、船尾板）：照體素出方塊網格（同一面同一色合成大塊）；貼著殼的那一面不出。
+ // ⛔ 只換畫的那一份（GPU 的三角形）：佔格 occ、碰撞、站位照原本的網格 ⇒ 戰局不變。
+-var SHELL_J = 8, SHELL_R = 6, SHELL_TOL = 0.6, SHELL_TW = 256;
++var SHELL_J = 8, SHELL_R = 6, SHELL_TOL = 0.6, SHELL_TW = 256, SHELL_FRAG = 50, SHELL_BOXV = 48, SHELL_BOXAIR = 0.88;
+ /** 匯出的網格 ⇒ 格子：{ c 一格多大, o 起點, n [nx, ny, nz], s 實心（0／1）, col 顏色（材質序號，-1 ＝ 沒有） }；不是軸對齊的格點網格 ⇒ null。 */
+ function shellVox(m) {
+   var V = m.verts, T = m.tris, nv = V.length / 3, i, k, c = 0;
+@@ -231,7 +231,7 @@ function shellBuild(m, st) {
+   }
+   var Lyr = shellLayer(tex);
+   // 殼的格（外緣往外半格到裡面 r − 殼厚 再往裡半格之間、在中心以下的）⇒ 殼以外的實心另外出方塊
+-  var SH = new Uint8Array(S.length);
++  var SH = new Uint8Array(S.length), NEAR = new Uint8Array(S.length);   // NEAR：殼帶附近（外 1.5 格、內 2.5 格；碎塊的判定）
+   for (s = s0; s <= s1; s++) {
+     var cy3 = YC[s], cz3 = ZT[s] - 0.5;
+     for (pl = 0; pl < NL0; pl++) for (pz = 0; pz < NZ0; pz++) {
+@@ -241,6 +241,7 @@ function shellBuild(m, st) {
+       var r = Math.hypot(dy, dz), th2 = Math.atan2(-Math.min(dz, 0), -dy), jf2 = Math.max(0, Math.min(J2, th2 / Math.PI * J2)), jj0 = Math.min(NR - 2, Math.floor(jf2)), ff = jf2 - jj0;
+       var ro2 = RO[s][jj0] * (1 - ff) + RO[s][jj0 + 1] * ff, th3 = TH[jj0] * (1 - ff) + TH[jj0 + 1] * ff;
+       if (r <= ro2 + 0.75 && r >= ro2 - th3 - 0.75) SH[ix2] = 1;
++      if (r <= ro2 + 1.5 && r >= ro2 - th3 - 2.5) NEAR[ix2] = 1;
+     }
+   }
+   var out = [];
+@@ -290,11 +291,70 @@ function shellBuild(m, st) {
+       flat(GO[k2][j], GO[k2][j + 1], GI[k2][j + 1], GI[k2][j], [cvA, cvB, cvB, cvA, cvB, cvA], want);
+     }
+   });
+-  var nShell = out.length / 27;
+-  // 殼以外的實心：方塊網格（同一平面、同一色合成長方形；貼著實心（殼或別的格）的面不出）
+-  var FB = {}, STR = [1, nx, nxy];                                       // 露出來的面照（軸、朝向、層）分桶：只從殼以外的格出發
++  var nShell = out.length / 27, STR = [1, nx, nxy];
++  // 殼的碎塊（TASK-0824；Tim「移除一些脫離主體 飄在空中的碎塊」）：殼以外的格照面相連分塊，小於 SHELL_FRAG 格、每一格都在殼帶附近（舷緣頂以下）的 ⇒ 不出
++  //   （船頭、船尾截面變尖，射線量的殼帶沒包進殼角落的格子 ⇒ 以前照方塊畫、離平滑殼一段距離懸著；它們的位置本來就被平滑殼蓋著）
++  var DROP = new Uint8Array(S.length), LAB = new Int32Array(S.length).fill(-1), nDrop = 0, nFrag = 0;
+   for (i = 0; i < S.length; i++) {
+-    if (!S[i] || SH[i]) continue;
++    if (!S[i] || SH[i] || LAB[i] >= 0) continue;
++    var qf = [i], Lf0 = [i], near = true; LAB[i] = i;
++    while (qf.length) {
++      var pf = qf.pop(), gf = [pf % nx, ((pf / nx) | 0) % n[1], (pf / nxy) | 0]; if (!NEAR[pf]) near = false;
++      for (var ff = 0; ff < 6; ff++) {
++        var axf = ff >> 1, sgf = ff & 1 ? 1 : -1, nbf = gf[axf] + sgf; if (nbf < 0 || nbf >= n[axf]) continue;
++        var jf = pf + sgf * STR[axf]; if (!S[jf]) continue;
++        if (SH[jf]) continue;
++        if (LAB[jf] < 0) { LAB[jf] = i; qf.push(jf); Lf0.push(jf); }
++      }
++    }
++    if (Lf0.length < SHELL_FRAG && near) { Lf0.forEach(function (q) { DROP[q] = 1; }); nDrop += Lf0.length; nFrag++; }
++  }
++  // 同色、體積大的長方體（TASK-0824；Tim「把一些同色立方體部分 直接獨立出來 同色且體積大的立方體」「槳是否可以走剛剛說的 同色立方體」）：
++  //   從每一格往三個方向長、挑最大的；體積 ≥ SHELL_BOXV 而且（每邊 ≥ 2 格，或一格厚但外擴一圈（含斜對角）≥ SHELL_BOXAIR 是空氣：收著的槳）⇒ 一塊一個方框（露出來的面才出）
++  var BX = new Uint8Array(S.length), nBox = 0, ORD = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
++  function solidG(x, y, z) { return x >= 0 && y >= 0 && z >= 0 && x < nx && y < n[1] && z < n[2] && S[x + nx * y + nxy * z]; }
++  function freeG(x, y, z, cc) { var ix = x + nx * y + nxy * z; return x < nx && y < n[1] && z < n[2] && S[ix] && !SH[ix] && !DROP[ix] && !BX[ix] && CL[ix] === cc; }
++  for (i = 0; i < S.length; i++) {
++    if (!S[i] || SH[i] || DROP[i] || BX[i]) continue;
++    var b0 = [i % nx, ((i / nx) | 0) % n[1], (i / nxy) | 0], bcol = CL[i], best = null, bv = 0;
++    for (k = 0; k < 6; k++) {
++      var d = [1, 1, 1];
++      ORD[k].forEach(function (axb) {
++        for (;;) {
++          if (b0[axb] + d[axb] >= n[axb]) break;
++          var ub = (axb + 1) % 3, wb = (axb + 2) % 3, pb = [0, 0, 0], okb = true;
++          for (var ia = 0; ia < d[ub] && okb; ia++) for (var ib = 0; ib < d[wb] && okb; ib++) { pb[axb] = b0[axb] + d[axb]; pb[ub] = b0[ub] + ia; pb[wb] = b0[wb] + ib; if (!freeG(pb[0], pb[1], pb[2], bcol)) okb = false; }
++          if (!okb) break; d[axb]++;
++        }
++      });
++      var vb = d[0] * d[1] * d[2]; if (vb > bv) { bv = vb; best = d; }
++    }
++    if (bv < SHELL_BOXV) continue;
++    if (Math.min(best[0], best[1], best[2]) < 2) {
++      var ex = 0, tot = 0;
++      for (var z7 = b0[2] - 1; z7 <= b0[2] + best[2]; z7++) for (var y7 = b0[1] - 1; y7 <= b0[1] + best[1]; y7++) for (var x7 = b0[0] - 1; x7 <= b0[0] + best[0]; x7++) {
++        if (x7 >= b0[0] && x7 < b0[0] + best[0] && y7 >= b0[1] && y7 < b0[1] + best[1] && z7 >= b0[2] && z7 < b0[2] + best[2]) continue;
++        tot++; if (!solidG(x7, y7, z7)) ex++;
++      }
++      if (ex < SHELL_BOXAIR * tot) continue;
++    }
++    for (var bz = 0; bz < best[2]; bz++) for (var by = 0; by < best[1]; by++) for (var bx = 0; bx < best[0]; bx++) BX[(b0[0] + bx) + nx * (b0[1] + by) + nxy * (b0[2] + bz)] = 1;
++    nBox++;
++    var B1 = [b0[0] + best[0], b0[1] + best[1], b0[2] + best[2]], rgbB = rgbOf(bcol);
++    for (var axq = 0; axq < 3; axq++) for (var sq = 0; sq < 2; sq++) {
++      var uq = (axq + 1) % 3, wq = (axq + 2) % 3, lay = sq ? B1[axq] : b0[axq] - 1, seen = false, pq = [0, 0, 0];   // 這一面外面那一層有沒有不是實心的 ⇒ 露出來才出
++      for (var iq = 0; iq < best[uq] && !seen; iq++) for (var jq = 0; jq < best[wq] && !seen; jq++) { pq[axq] = lay; pq[uq] = b0[uq] + iq; pq[wq] = b0[wq] + jq; if (!solidG(pq[0], pq[1], pq[2])) seen = true; }
++      if (!seen) continue;
++      var cq = [[0, 0], [1, 0], [1, 1], [0, 1]].map(function (t) { var p = [0, 0, 0]; p[axq] = sq ? B1[axq] : b0[axq]; p[uq] = t[0] ? B1[uq] : b0[uq]; p[wq] = t[1] ? B1[wq] : b0[wq]; return p; });
++      var nmq = [0, 0, 0]; nmq[axq] = sq ? 1 : -1;
++      flat(cq[0], cq[1], cq[2], cq[3], [rgbB, rgbB, rgbB, rgbB, rgbB, rgbB], nmq);
++    }
++  }
++  var nBoxT = out.length / 27 - nShell;
++  // 其餘殼以外的實心：方塊網格（同一平面、同一色合成長方形；貼著實心（殼、方框或別的格）的面不出）
++  var FB = {};                                                           // 露出來的面照（軸、朝向、層）分桶：只從殼以外的格出發
++  for (i = 0; i < S.length; i++) {
++    if (!S[i] || SH[i] || DROP[i] || BX[i]) continue;
+     var gx = i % nx, gy = ((i / nx) | 0) % n[1], gz = (i / nxy) | 0, gg = [gx, gy, gz];
+     for (var f6 = 0; f6 < 6; f6++) {
+       var ax6 = f6 >> 1, sg6 = f6 & 1 ? 1 : -1, nb6 = gg[ax6] + sg6;
+@@ -323,6 +383,6 @@ function shellBuild(m, st) {
+     }
+   });
+   var R = new Float32Array(out); R.shellTex = tex;
+-  if (st) { st.cell = c; st.axis = a; st.slices = NS; st.kept = NK; st.shellTris = nShell; st.restTris = out.length / 27 - nShell; st.tris = out.length / 27; st.layer = Lyr; st.th = Array.from(TH).map(function (x) { return +x.toFixed(2); }); }
++  if (st) { st.cell = c; st.axis = a; st.slices = NS; st.kept = NK; st.shellTris = nShell; st.boxes = nBox; st.boxTris = nBoxT; st.frags = nFrag; st.fragCells = nDrop; st.restTris = out.length / 27 - nShell - nBoxT; st.tris = out.length / 27; st.layer = Lyr; st.th = Array.from(TH).map(function (x) { return +x.toFixed(2); }); }
+   return R;
+ }

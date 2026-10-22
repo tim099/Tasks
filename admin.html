@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockside 設定後台</title>
+<!-- 《憲法號對轟》設定後台（TASK-0542）：改 src/config/game.json（各項設定的初始值、船隻清單）、重建遊戲、匯入新船、重新匯入。
+     ⛔ 不是展品（不寫展品卡、不進畫廊清單）。要由 admin.py 開：cd src && python -I admin.py serve ⇒ http://127.0.0.1:8642/
+     頁面只是表單：驗設定、寫檔、匯出、建置都在 admin.py（同一組函式也給命令列用）。 -->
+<style>
+:root { --bg: #f6f4ef; --card: #fff; --ink: #1d2430; --mute: #5d6675; --line: #d9d4c9; --acc: #1f5f8b; --acc-ink: #fff; --chg: #fff3c4; --chg-line: #d9a400; --bad: #b3261e; --bad-bg: #fde7e5; --ok: #1e6b3a; --log: #11161d; --log-ink: #d7e1ea; }
+@media (prefers-color-scheme: dark) { :root { --bg: #12161c; --card: #1b2129; --ink: #e3e8ef; --mute: #98a3b3; --line: #2e3742; --acc: #5aa7dc; --acc-ink: #0b1218; --chg: #3a3216; --chg-line: #c99a1a; --bad: #ff8a80; --bad-bg: #3a1d1b; --ok: #7ed39a; --log: #0b0f14; --log-ink: #c9d4de; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, "Microsoft JhengHei", "PingFang TC", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+header h1 { font-size: 16px; margin: 0 12px 0 0; }
+header .st { color: var(--mute); font-size: 13px; margin-right: auto; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+section h2 { font-size: 15px; margin: 0 0 4px; }
+section p.note { margin: 0 0 10px; color: var(--mute); font-size: 13px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+button.pri { background: var(--acc); color: var(--acc-ink); border-color: var(--acc); }
+button:disabled { opacity: .5; cursor: default; }
+input, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 3px 6px; min-width: 0; }
+input[type=number] { width: 86px; }
+input.wide { width: 100%; }
+.chg { background: var(--chg) !important; border-color: var(--chg-line) !important; }
+.bad { border-color: var(--bad) !important; background: var(--bad-bg) !important; }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+th { color: var(--mute); font-weight: 500; font-size: 13px; }
+td.k { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--mute); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 16px; }
+.fld { display: flex; align-items: center; gap: 6px; }
+.fld > span:first-child { flex: 1; }
+.ship { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 10px; }
+.ship h3 { margin: 0; font-size: 15px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ship h3 .sp { margin-right: auto; }
+.ship .meta { color: var(--mute); font-size: 12px; font-family: ui-monospace, Consolas, monospace; margin: 4px 0 8px; word-break: break-all; }
+.ship h4 { font-size: 13px; margin: 10px 0 4px; color: var(--mute); font-weight: 600; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#log { background: var(--log); color: var(--log-ink); font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px 12px; border-radius: 6px; max-height: 320px; overflow: auto; margin: 0; }
+#log .e { color: #ff9d94; }
+#banner { display: none; background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); border-radius: 8px; padding: 12px 16px; }
+#errs { color: var(--bad); margin: 0; padding-left: 18px; }
+.mute { color: var(--mute); }
+nav { display: flex; gap: 4px; margin-right: 8px; }
+nav a { color: var(--ink); text-decoration: none; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); }
+nav a.on { background: var(--acc); color: var(--acc-ink); border-color: var(--acc); }
+.gcard { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 10px; scroll-margin-top: 70px; }
+.gcard.hl { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc); }
+.gcard h3 { margin: 0 0 6px; font-size: 15px; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.gcard h3 .k { font: 12px ui-monospace, Consolas, monospace; color: var(--mute); }
+.gcard .calc { margin-top: 8px; font-size: 13px; }
+.gcard .calc td, .gcard .calc th { white-space: normal; }
+.gcard .use a, .ship .guns a { color: var(--acc); margin-right: 10px; }
+.ship { scroll-margin-top: 70px; }
+#roomsWrap { padding: 0 16px 16px; }
+@media (max-width: 600px) { header { padding: 8px 16px; } main { padding: 12px 16px; } input[type=number] { width: 70px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Blockside 設定後台</h1>
+  <nav><a href="#" id="navAll">全部設定</a><a href="#guns" id="navGuns">🔫 砲</a></nav>
+  <span class="st" id="st">讀取中…</span>
+  <button id="bRooms" title="開新分頁：遊戲的船隻配置頁（甲板與艙房）；改了就送回這一頁、標成還沒存（TASK-0647）">甲板與艙房編輯器…</button>
+  <button id="bRevert" title="丟掉還沒存的修改，回到磁碟上的設定檔">放棄修改</button>
+  <button id="bSave">儲存</button>
+  <button id="bBuild" title="照磁碟上的設定檔重建 index.html">重建遊戲</button>
+  <button id="bBoth" class="pri">儲存並重建</button>
+</header>
+<main>
+  <div id="banner">這一頁要由 <code>admin.py</code> 開：在 Blockside 的 <code>src/</code> 執行 <code>python -I admin.py serve</code>，再開 <a href="http://127.0.0.1:8642/">http://127.0.0.1:8642/</a>。直接開檔案讀不到設定檔，也不能寫。</div>
+  <section class="keep"><h2>結果</h2><ul id="errs"></ul><pre id="log">（還沒有動作）</pre></section>
+
+  <section id="gunPage" class="keep" hidden><h2>砲的設定</h2>
+    <p class="note">每一種砲一張卡：改了照樣是黃底、按上面的「儲存並重建」遊戲才吃得到。下面的「算給你看」照現在填的數字即時算（TASK-0621：能量 ＝ ½ × 彈重 × 初速²；打鐵甲照入射角與板厚算擊穿機率；爆裂彈的爆炸半徑照彈重與硬度）。從「船隻」卡片點「這艘的砲」⇒ 只列那艘船用到的砲。</p>
+    <p class="note" id="gpFilter"></p>
+    <h3 style="margin:10px 0 4px;font-size:14px">擊穿與爆炸（全部的砲共用）</h3>
+    <div class="grid" id="gpPen"></div>
+    <div id="gpCards"></div></section>
+
+  <section id="sLimits"><h2>船數上限</h2>
+    <p class="note">同時在場最多幾艘（主選單「同時在場」滑桿的上限、畫質設定「陰影船數」的上限都跟著它；著色器的陣列照它配，太大較吃顯卡）、船艙遮罩最多幾艘、編成最多幾艘（超過同時在場的排候補）。改了要重建才生效。</p>
+    <div class="grid" id="limits"></div></section>
+
+  <section><h2>問題回報（Discord）</h2>
+    <p class="note">遊戲裡「🐞 問題回報」與報錯彈窗的「送出回報」送到這個 Discord webhook（短訊息＋ report.txt 完整內容＋截圖）。空白 ＝ 沒有「送出回報」，只剩寄信與複製。
+      <b>貼明文網址、按存檔 ⇒ 自動加密成 x1:… 才寫進 game.json</b>（明文不落地；也可以用指令 <code>python -I src/admin.py hook</code> 貼上）。
+      ⚠ 加密只是混淆：遊戲要自己解得開，鑰匙跟著成品公開 —— 擋得住掃 repo 的機器人與順手一瞥，擋不住有心翻程式的人。遊戲端另外關掉 @、限長、限次數；被濫用 ⇒ 在 Discord 頻道設定重建 webhook，換這一格、重建。改完存檔＋重建才生效。</p>
+    <div class="grid" id="reportCfg"></div></section>
+
+  <section><h2>主選單預設</h2>
+    <p class="note">第一次打開（沒有存檔）時主選單選在哪一格。玩家自己改過的照他的存檔。預設的船 ＝ 下面船隻清單的第一艘。</p>
+    <div class="grid" id="menu"></div></section>
+
+  <section><h2>滑桿：下限、上限、預設</h2>
+    <p class="note">預設也可以用遊戲的細節設定頁改：<button id="bDetDef">用細節設定頁設出廠預設值…</button><button id="bFurnDef">用道具設定頁設道具的出廠預設值…</button><button id="bKeysDef">用鍵位設定頁設鍵位的出廠預設值…</button>（跳轉過去；用的是上一次建好的成品，存了要重建才生效）</p>
+    <p class="note">細節設定頁與主選單的滑桿（網址參數同一組）。黃底 ＝ 跟版控裡的不一樣。</p>
+    <div class="tbl"><table id="lim"><thead><tr><th>設定</th><th>鍵</th><th>下限</th><th>上限</th><th>預設</th></tr></thead><tbody></tbody></table></div>
+    <h2 style="margin-top:12px">開局距離（公尺）</h2><div class="grid" id="dist"></div></section>
+
+  <section><h2>彈種倍率（%）</h2>
+    <p class="note">列 ＝ 彈種，欄 ＝ 打到什麼。對砲 ＝ 砲、舵輪、火藥桶。</p>
+    <div class="tbl"><table id="ammo"><thead><tr><th></th><th>對砲</th><th>對帆</th><th>對人</th></tr></thead><tbody></tbody></table></div>
+    <div class="grid" id="ammoLim" style="margin-top:8px"></div></section>
+
+  <section><h2>砲種表</h2>
+    <p class="note"><a href="#guns">🔫 砲的設定頁 →</a>（一種砲一張卡、算給你看擊穿機率與爆炸半徑、哪幾艘船裝了幾門）</p>
+    <p class="note">代號（code）是雕刻作品裡 meta gun 的值，改了舊船就認不到砲。砲班滿編最多 8（砲旁只有 8 個站位）。每發傷害在上面的滑桿（dmg…）。</p>
+    <div class="tbl"><table id="guns"><thead><tr><th>種類</th><th>代號</th><th>名字</th><th>簡稱</th><th>初速 m/s</th><th>裝填倍率</th><th>大彈</th><th>洞倍率</th><th>砲班滿編</th><th>最少</th><th>重量 噸</th><th>彈重 kg</th><th>連發（發）</th><th>連發間隔 秒</th></tr></thead><tbody></tbody></table></div></section>
+
+  <section><h2>材質表</h2>
+    <p class="note">每一格的材質決定它多難打穿、多重（TASK-0616）。跨船共用：雕刻作品的關聯 meta 只寫材質 ID（<code>material=iron</code>），參數都在這裡。沒寫材質的船 ＝ 下面每艘船的「全船預設材質」，那一格也空著 ＝ 這裡的預設。
+      ID 英文小寫（改了 ID 舊船就認不到 ⇒ 要換就新增一種）。比重：一格 0.1 m ＝ 1 公升 ⇒ 每格幾 kg（橡木 0.7 ＝ 以前統一的重量）。硬度倍率乘在船隻設定的船殼硬度上（洞多大、砲彈穿過去慢多少）。易燃性 0–1 先記著（燃燒還沒做）。</p>
+    <div class="grid" id="matDef"></div>
+    <div class="tbl"><table id="mats"><thead><tr><th>ID</th><th>名字</th><th>分類</th><th>比重</th><th>硬度倍率</th><th>易燃性</th><th>金屬度</th><th>粗糙度</th><th title="透明度 0–0.95（選填）：寫了 ⇒ 這種材質的格畫成半透明的平面（玻璃），看得到後面">透明度</th><th title="這種材質的格畫成平滑面（沒寫 render 也算；關聯明寫 render=voxel 照方塊）、螺旋槳整份平滑">平滑</th><th>擊穿門檻 kJ／格</th><th>用在</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div class="row" style="margin-top:8px"><input id="mNew" placeholder="新材質 ID（英文小寫，例 elm、steel）" style="min-width:240px"><button id="bMat">新增材質</button></div></section>
+
+  <section><h2>船員配置（每艘船的預設）</h2>
+    <p class="note">每艘船可以在下面另外寫，空白 ＝ 用這裡的。砲手人數照砲種表；預備水手的人數 ＝ 細節設定的「預備水手」× 倍率。</p>
+    <div class="grid" id="crew0"></div></section>
+
+  <section><h2>船型高度與範圍（每艘船的預設）</h2>
+    <p class="note">格的 z（0.1 m 一格）。本來是照憲法號量的；船的高度不一樣（例如夜隼號只有一半高）就在那艘船底下另外寫。</p>
+    <div class="grid" id="geo0"></div></section>
+
+  <section><h2>船隻</h2>
+    <p class="note">順序 ＝ 主選單的順序，第一艘是預設。船隻設定空白 ＝ 用滑桿的預設。重新匯入會從雕刻作品重新匯出，列出跟上一版的格數、checksum 差別，並重建。</p>
+    <div id="ships"></div>
+    <h2 style="margin-top:16px">匯入新船</h2>
+    <p class="note">給雕刻作品 ID（例：basecamp-ember-01m-assembly）⇒ 匯出 .vxk、登記進船隻清單（航速、船員照預設）、重建；主選單就選得到。比例要跟現有的船一樣（0.1 m／格）。</p>
+    <div class="row"><input id="iWork" placeholder="雕刻作品 ID" style="flex:2;min-width:220px"><input id="iId" placeholder="代號（英文小寫，例 frigate2）" style="flex:1;min-width:150px"><input id="iName" placeholder="名字（例 二號艦）" style="flex:1;min-width:120px"><button id="bImport" class="pri">匯入</button></div>
+  </section>
+</main>
+<!-- 甲板與艙房的預設（TASK-0568）：格子要船型 ⇒ 用一份建好的遊戲（/game?admin=rooms，只開船隻配置頁的甲板與艙房）當編輯器；它改了就把那一型送回來。
+     TASK-0647（Tim 2026-10-16）：編輯器開成獨立分頁（最上面那一列的「甲板與艙房編輯器…」），不再嵌在這一頁 -->
+<div id="roomsWrap"><section><h2>甲板與艙房（每艘船的預設）</h2>
+  <p class="note">按最上面的「甲板與艙房編輯器…」開新分頁，在那裡選船型、改：艙房選類型（自動擺滿）或「擺設…」自己擺；甲板擺火藥桶（取用點）。改了就寫進這裡的設定（ships[].rooms，黃色的「還沒存」），按上面的「儲存」才存檔、重建之後遊戲才吃得到。玩家自己在遊戲裡改的不受影響。編輯器用的是上一次建好的成品（新船、新的艙房標記要先重建）。</p>
+  <p class="note" id="roomsSum"></p></section></div>
+<script>
+(function () {
+  'use strict';
+  var LIM_NAME = { base: '基底航速（節；額外動力，0 ＝ 沒有）', hard: '船殼硬度倍率（1 ＝ 只看材質；2026-10-16 起）', flood: '進水速度', pump: '基礎抽水量（噸／分；預設照排水量，憲法號 18）', ballast: '壓艙物（噸）', gunw: '砲的重量倍率', cas: '降旗的死傷比例', speed: '航速倍率', agile: '靈活性倍率', upwind: '逆風性能',
+    gunhp: '砲的血量', sailhp: '帆的血量', crewhp: '船員的血量', crewdeath: '船員死亡率（HP 歸零當場陣亡的機率 %，其餘變傷員）', powderhp: '火藥桶的血量（拉滿 ＝ 不會爆）', blast: '殉爆威力', blastv: '爆炸威力浮動 ±',
+    dmgtr: '每發傷害：三叉戟砲', dmg9d: '每發傷害：9 吋 Dahlgren', dmg64b: '每發傷害：6.4 吋 Brooke', dmg7b: '每發傷害：7 吋 Brooke', dmg11d: '每發傷害：XI 吋 Dahlgren（莫尼特號砲塔）', dmg36l: '每發傷害：36 磅 coursier（皇家號）', dmg8l: '每發傷害：8 磅 bâtarde（皇家號）', dmgpr: '每發傷害：迴旋砲 pierrier', dmgsf: '每發傷害：希臘火 siphon', dmgbl: '每發傷害：弩砲 toxoballistra', dmgmg: '每發傷害：投石機 manganikon', dmgbw: '每發傷害：弓 bow', dmgbd: '每發傷害：bombardella（越嶺號船首）', dmg305k: '每發傷害：30.5 cm 克虜伯（定遠號）', dmg150k: '每發傷害：15 cm 克虜伯（定遠號）', dmgh37: '每發傷害：37 mm 哈乞開斯轉膛砲', dmg320c: '每發傷害：32 cm Canet（松島號）', dmg120a: '每發傷害：12 cm Armstrong 速射砲（松島號）', dmgh57: '每發傷害：57 mm 哈乞開斯 6 磅', dmgh47: '每發傷害：47 mm 哈乞開斯 3 磅', dmg24: '每發傷害：24 磅長砲', dmg32l: '每發傷害：32 磅長砲', dmg32: '每發傷害：32 磅 carronade', dmg18: '每發傷害：18 磅追擊砲', dmg4: '每發傷害：4 磅砲', dmg12: '每發傷害：12 磅長砲', dmg6: '每發傷害：6 磅砲', dmg3c: '每發傷害：3 磅追擊砲',
+    inertia: '動力：加速慣性（質量的倍率）', turninert: '動力：迴轉慣性（轉向追舵的時間倍率）', sailtq: '動力：帆的力矩（受損不平衡時船自己偏多少）', windcap: '帆的風速上限（m/s）', box: '砲旁藥箱（份）', carry: '送藥手一次搬（份）', wind: '帆的風壓', hands: '預備水手（人）', drown: '溺水時間（秒）', heal: '治療時間（秒；0 ＝ 關）', musket: '火槍射程（m）', sailfix: '補帆時間（秒）', burn: '火勢（%；希臘火點著的火延燒多快，0 ＝ 不點火）', galley: '廚房加成（%；吃過飯的水手工作效率加成，0 ＝ 關：不開廚房、不生廚師；TASK-0720）', pslowb: '物理減速門檻（模擬最多佔幾成時間）', navre: '尋路更新（秒；0 ＝ 關）', sea: '浪的大小', stall: '頂風失速',
+    funspeed: '娛樂加成：航速', funagile: '娛樂加成：靈活', funstall: '娛樂加成：頂風失速', funpowder: '娛樂加成：火藥血量', funhard: '娛樂加成：鐵甲硬度（擊穿門檻的倍率；木頭不變）' };
+  var LIMITS = [['maxShips', '同時在場最多（艘）', 2, 16], ['maskNear', '船艙遮罩最多（艘）', 1, 16], ['fleetMax', '編成最多（艘）', 2, 99]];
+  var MENU = [['play', '玩法', [['fun', '娛樂'], ['real', '寫實']]], ['mode', '模式', [['pve', '對戰電腦'], ['eve', '觀戰'], ['sandbox', '沙盒'], ['observe', '船隻觀察']]],
+    ['sail', '航行', [['auto', '自動'], ['manual', '我艦手動'], ['off', '停船']]], ['gfx', '畫質', [['low', '低'], ['mid', '中'], ['high', '高']]],
+    ['phx', '物理效果', [['full', '全開'], ['high', '高'], ['mid', '中'], ['low', '低']]]];
+  var CREW = [['officers', '軍官（0–8，照順序：船長、大副、二副、三副、見習軍官）', 1], ['helm', '舵手（0–4）', 1], ['marines', '陸戰隊最多（人）', 1], ['marineGap', '陸戰隊間隔（格）', 1],
+    ['top', '每根桅的桅頂水手', 1], ['monkeys', '送藥手（每對砲幾個：0–2，0 ＝ 沒有）', 1], ['handsK', '預備水手倍率', 0], ['shelter', '船員避開露天甲板（0／1：預備水手不上去閒晃、船長以外的軍官在甲板下）', 1],
+    ['surgeon', '船醫上限（0–60；人數照病床的設施配員）', 1], ['carpenter', '木匠上限（1–20；人數照木工台的設施配員）', 1], ['sailmaker', '帆匠上限（1–20；人數照帆布櫃的設施配員）', 1], ['cook', '廚師上限（0–4；0 ＝ 不開廚房）', 1]];   // 船隻配置頁（js/05_hull.js CREW_ITEMS）調得到的上限；範圍同 src/admin.py CREW
+  var GEO = [['spar', '露天甲板站人高度 z0–z1（空白 ＝ 照 carronade 推）', 2], ['marines', '陸戰隊範圍：離船尾、離船頭（格）', 2], ['center', '船的中心高度（鏡頭）', 1], ['aim', '沒有目標時瞄的高度', 1],
+    ['aimZ', '瞄準高度範圍', 2], ['deckAim', '砲長「砲甲板」瞄的高度', 2], ['rigAim', '砲長「桅」瞄的高度', 2]];
+  var SHIP_CFG = [['speed', '航速'], ['agile', '靈活'], ['upwind', '逆風'], ['base', '額外動力'], ['hard', '硬度'], ['flood', '進水'], ['pump', '抽水'], ['gunw', '砲重']];
+  var MAT_KINDS = [['wood', '木頭'], ['metal', '金屬'], ['other', '其他']], MAT_ID = /^[a-z][a-z0-9_]{0,31}$/;   // 材質（TASK-0616；admin.py MAT_KINDS／MAT_ID 同一份規則）
+  var GUNF = [['code', 's'], ['name', 's'], ['short', 's'], ['V', 'n'], ['reload', 'n'], ['big', 'b'], ['hole', 'o'], ['crew', 'n'], ['min', 'n'], ['mass', 'n'], ['shot', 'o'], ['burst', 'o'], ['burstGap', 'g']];   // burst／burstGap：連發（一份彈藥打幾發、每發隔幾秒；空白 ＝ 1 發）
+
+  var S = null, C = null, C0 = null, dirty = false, busy = false;
+  // 砲的設定頁（TASK-0621）：每發傷害住在滑桿 lim 裡（遊戲 69_prefs.js DMG_Q 同一份對照）；擊穿與爆炸的參數照遊戲 21_gunnery.js PEN 的預設
+  var DMG_Q = { long: 'dmg24', long32: 'dmg32l', carr: 'dmg32', chase: 'dmg18', long4: 'dmg4', long12: 'dmg12', long18: 'dmg18l', long6: 'dmg6', chase3: 'dmg3c', trident: 'dmgtr', dahl9: 'dmg9d', brooke64: 'dmg64b', brooke7: 'dmg7b', dahl11: 'dmg11d', long36: 'dmg36l', long8: 'dmg8l', pierrier: 'dmgpr', siphon: 'dmgsf', ballista: 'dmgbl', mangonel: 'dmgmg', bow: 'dmgbw', bombardella: 'dmgbd', krupp305: 'dmg305k', krupp150: 'dmg150k', hotch37: 'dmgh37', canet320: 'dmg320c', armstrong120: 'dmg120a', hotch57: 'dmgh57', hotch47: 'dmgh47' };
+  var PEN_DEF = { lo: 0.4, hi: 1.3, k: 3, rico: 65, wood: 0.8, splinter: 50, shellR: 5.2, shellHard: 0.5, ref: 10.9, uwMin: 20, uwDrag: 0.019 };
+  var PEN_F = [['lo', '擊穿機率：比值低於它 ⇒ 0（小口徑完全打不動）'], ['hi', '比值高於它 ⇒ 必穿'], ['k', '曲線的次方（越大 ⇒ 下緣附近越難穿）'], ['rico', '彈開的入射角（度，跟法線的夾角）'],
+    ['wood', '打木頭：每消耗一單位扣幾 kJ（船殼硬度 ×1）'], ['splinter', '碎片傷人的基準能量（kJ）'], ['shellR', '爆裂彈爆炸半徑（格；24 磅、橡木）'], ['shellHard', '爆炸半徑照硬度打折的次方（越大 ⇒ 硬的越耐爆）'], ['ref', '沒寫彈重的砲當幾 kg'],
+    ['uwMin', '落水後繼續走的最小彈重 kg（實心彈；小的一落水就沒了，省計算）'], ['uwDrag', '水的阻力（每走 1 m 速度 × e^(−阻力／半徑)）']];
+  var RELOAD_S = 7;                                                    // 遊戲 00_core.js RELOAD（裝填倍率 1 ＝ 7 秒）
+  function $(id) { return document.getElementById(id); }
+  function el(tag, attrs, kids) { var e = document.createElement(tag); for (var k in attrs || {}) { if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]); } (kids || []).forEach(function (c) { if (c) e.appendChild(c); }); return e; }
+  function get(o, path) { for (var i = 0; i < path.length; i++) { if (o == null) return undefined; o = o[path[i]]; } return o; }
+  function put(o, path, v) { for (var i = 0; i < path.length - 1; i++) { if (o[path[i]] == null || typeof o[path[i]] !== 'object') o[path[i]] = typeof path[i + 1] === 'number' ? [] : {}; o = o[path[i]]; } if (v === undefined) { if (Array.isArray(o)) o[path[path.length - 1]] = null; else delete o[path[path.length - 1]]; } else o[path[path.length - 1]] = v; }
+  function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  /** 數字輸入：綁到 C 的某個路徑；跟版控（C0）不一樣 ⇒ 黃底；opt ＝ 空白 ＝ 刪掉那個鍵（用預設）。 */
+  function num(path, o) {
+    o = o || {};
+    var v = get(C, path), inp = el('input', { type: 'number', step: 'any' });
+    inp.value = v === undefined || v === null ? '' : v;
+    if (o.ph !== undefined) inp.placeholder = o.ph;
+    if (o.title) inp.title = o.title;
+    function mark() { var cv = get(C, path), c0 = C0 ? get(C0, path) : cv; inp.classList.toggle('chg', !same(cv === null ? undefined : cv, c0 === null ? undefined : c0)); if (C0 && !same(cv, c0)) inp.title = '版控裡是 ' + (c0 === undefined ? '（沒寫）' : JSON.stringify(c0)); }
+    inp.oninput = function () {
+      var t = inp.value.trim(), x = t === '' ? undefined : Number(t);
+      inp.classList.toggle('bad', (t === '' && !o.opt) || (t !== '' && !isFinite(x)));
+      if (t !== '' && !isFinite(x)) return;
+      put(C, path, x); if (o.after) o.after(); touch(); mark();
+    };
+    mark(); return inp;
+  }
+  function txt(path, o) { o = o || {}; var inp = el('input', { type: 'text' }); inp.value = get(C, path) || ''; if (o.cls) inp.className = o.cls; if (o.ro) inp.readOnly = true;
+    function mark() { inp.classList.toggle('chg', !!C0 && !same(get(C, path), get(C0, path))); }
+    inp.oninput = function () { put(C, path, inp.value); touch(); mark(); }; mark(); return inp; }
+  function sel(path, opts) { var s = el('select'); opts.forEach(function (p) { var op = el('option', { value: p[0], text: p[1] }); s.appendChild(op); }); s.value = get(C, path);
+    function mark() { s.classList.toggle('chg', !!C0 && !same(get(C, path), get(C0, path))); }
+    s.onchange = function () { put(C, path, s.value); touch(); mark(); }; mark(); return s; }
+  function chk(path) { var b = el('input', { type: 'checkbox' }); b.checked = !!get(C, path);
+    function mark() { b.classList.toggle('chg', !!C0 && !same(get(C, path), get(C0, path))); }
+    b.onchange = function () { put(C, path, b.checked); touch(); mark(); }; mark(); return b; }
+  function fld(label, inputs) { return el('label', { 'class': 'fld' }, [el('span', { text: label })].concat(inputs)); }
+  /** [a, b] 或 null（兩格都空白 ⇒ null，只有 spar 允許）。 */
+  function pair(path, nullable, ph) {
+    var v = get(C, path), a = el('input', { type: 'number', step: 'any' }), b = el('input', { type: 'number', step: 'any' });
+    if (ph) { a.placeholder = ph[0]; b.placeholder = ph[1]; }
+    a.value = v ? v[0] : ''; b.value = v ? v[1] : '';
+    function mark() { var cv = get(C, path), c0 = C0 ? get(C0, path) : cv, d = C0 && !same(cv, c0); a.classList.toggle('chg', d); b.classList.toggle('chg', d); }
+    function on() {
+      var ta = a.value.trim(), tb = b.value.trim();
+      if (ta === '' && tb === '') { a.classList.remove('bad'); b.classList.remove('bad'); put(C, path, nullable === 'null' ? null : undefined); touch(); mark(); return; }
+      var x = Number(ta), y = Number(tb), ok = ta !== '' && tb !== '' && isFinite(x) && isFinite(y);
+      a.classList.toggle('bad', !ok); b.classList.toggle('bad', !ok); if (!ok) return;
+      put(C, path, [x, y]); touch(); mark();
+    }
+    a.oninput = b.oninput = on; mark(); return [a, b];
+  }
+  function touch() { dirty = !same(C, S.config); status(); }
+  function status() {
+    var chg = C0 ? diffCount(C, C0) : 0;
+    $('st').textContent = (dirty ? '● 有還沒存的修改' : '已存') + '　·　跟版控差 ' + chg + ' 項' + (S && S.built ? '　·　遊戲建於 ' + new Date(S.built * 1000).toLocaleString() : '') +
+      (S && S.built && S.saved > S.built ? '（設定比遊戲新 ⇒ 要重建）' : '');
+    $('bSave').disabled = $('bBoth').disabled = busy || !dirty; $('bRevert').disabled = busy || !dirty; $('bBuild').disabled = busy; $('bImport').disabled = busy;
+  }
+  function diffCount(a, b) { var n = 0; (function walk(x, y) { if (x && y && typeof x === 'object' && typeof y === 'object' && !Array.isArray(x) && !Array.isArray(y)) { var ks = {}; Object.keys(x).concat(Object.keys(y)).forEach(function (k) { ks[k] = 1; }); for (var k in ks) walk(x[k], y[k]); } else if (!same(x, y)) n++; })(a, b); return n; }
+
+  function render() {
+    var L = $('limits'); L.innerHTML = '';
+    LIMITS.forEach(function (r) { L.appendChild(fld(r[1], [num(['limits', r[0]], { title: r[2] + '～' + r[3] + ' 的整數' })])); });
+    var RC = $('reportCfg'); RC.innerHTML = ''; if (!C.report) C.report = { webhook: '', cooldown: 60, perSession: 5 };   // 問題回報（js/01_gl.js errPost；admin.py validate 驗格式）
+    RC.appendChild(fld('Discord webhook 網址', [txt(['report', 'webhook'], { cls: 'wide' })]));
+    RC.appendChild(fld('兩次至少隔（秒）', [num(['report', 'cooldown'], { title: '10～3600' })]));
+    RC.appendChild(fld('開一次遊戲最多送幾則', [num(['report', 'perSession'], { title: '1～50' })]));
+    var M = $('menu'); M.innerHTML = '';
+    MENU.forEach(function (r) { M.appendChild(fld(r[1], [sel(['menu', r[0]], r[2])])); });
+    var tb = $('lim').tBodies[0]; tb.innerHTML = '';
+    Object.keys(C.lim).forEach(function (k) {
+      tb.appendChild(el('tr', {}, [el('td', { text: LIM_NAME[k] || k }), el('td', { 'class': 'k', text: k }),
+        el('td', {}, [num(['lim', k, 0])]), el('td', {}, [num(['lim', k, 1])]), el('td', {}, [num(['lim', k, 2])])]));
+    });
+    var D = $('dist'); D.innerHTML = '';
+    [['下限', 0], ['上限', 1], ['預設', 2]].forEach(function (r) { D.appendChild(fld(r[0], [num(['dist', r[1]])])); });
+    var at = $('ammo').tBodies[0]; at.innerHTML = '';
+    ['實心彈', '爆裂彈', '鏈彈'].forEach(function (n, i) { at.appendChild(el('tr', {}, [el('td', { text: n })].concat([0, 1, 2].map(function (j) { return el('td', {}, [num(['ammo', 'k', i, j])]); })))); });
+    var AL = $('ammoLim'); AL.innerHTML = '';
+    AL.appendChild(fld('倍率下限（%）', [num(['ammo', 'lim', 0])])); AL.appendChild(fld('倍率上限（%）', [num(['ammo', 'lim', 1])]));
+    var gt = $('guns').tBodies[0]; gt.innerHTML = '';
+    Object.keys(C.guns).forEach(function (k) {
+      gt.appendChild(el('tr', {}, [el('td', { 'class': 'k', text: k })].concat(GUNF.map(function (f) {
+        var p = ['guns', k, f[0]], w = f[1] === 's' ? txt(p) : f[1] === 'b' ? chk(p) : num(p, f[1] === 'o' ? { opt: true, ph: f[0] === 'shot' ? String(PEN_DEF.ref) : '1' } : f[1] === 'g' ? { opt: true, ph: '0.15' } : {});
+        if (f[1] === 's') w.style.width = f[0] === 'code' ? '72px' : '120px';
+        return el('td', {}, [w]);
+      }))));
+    });
+    renderMats();
+    var CW = $('crew0'); CW.innerHTML = '';
+    CREW.forEach(function (r) { CW.appendChild(fld(r[1], [num(['crew0', r[0]])])); });
+    var GE = $('geo0'); GE.innerHTML = '';
+    GEO.forEach(function (r) { GE.appendChild(fld(r[1], r[2] === 2 ? pair(['geo0', r[0]], r[0] === 'spar' ? 'null' : false) : [num(['geo0', r[0]])])); });
+    renderShips();
+    status();
+    route();
+  }
+  /** 材質表：哪幾艘船用到（全船預設、或 .vxk 的關聯 meta material）⇒ 「用在」那一欄；用到的不給刪。 */
+  function matUse(id) {
+    var u = [];
+    C.ships.forEach(function (s) { var d = (s.material || C.materials.default) === id, v = ((S.ships[s.id] || {}).materials || []).indexOf(id) >= 0; if (d || v) u.push(s.name + (d ? '（全船）' : '（部分）')); });
+    return u;
+  }
+  function renderMats() {
+    var D = $('matDef'); D.innerHTML = '';
+    D.appendChild(fld('預設材質（沒寫材質的船）', [sel(['materials', 'default'], Object.keys(C.materials.list).map(function (k) { return [k, C.materials.list[k].name + '（' + k + '）']; }))]));
+    var tb = $('mats').tBodies[0]; tb.innerHTML = '';
+    Object.keys(C.materials.list).forEach(function (k) {
+      var P = ['materials', 'list', k], u = matUse(k), rm = el('button', { text: '刪掉' });
+      rm.disabled = u.length > 0 || k === C.materials.default; if (rm.disabled) rm.title = '還在用（預設、或船用到）';
+      rm.onclick = function () { if (!confirm('刪掉材質「' + C.materials.list[k].name + '（' + k + '）」？')) return; delete C.materials.list[k]; touch(); render(); };
+      var nm = txt(P.concat('name')); nm.style.width = '140px';
+      tb.appendChild(el('tr', {}, [el('td', { 'class': 'k', text: k }), el('td', {}, [nm]), el('td', {}, [sel(P.concat('kind'), MAT_KINDS)]),
+        el('td', {}, [num(P.concat('density'))]), el('td', {}, [num(P.concat('hard'))]), el('td', {}, [num(P.concat('flammable'))]), el('td', {}, [num(P.concat('metal'), { opt: true, ph: '0', title: '金屬度 0–1（選填）：金屬有太陽高光與天空反射（平滑渲染的面）' })]), el('td', {}, [num(P.concat('rough'), { opt: true, ph: '0.5', title: '粗糙度 0–1（選填）：0 鏡面、1 很霧' })]), el('td', {}, [num(P.concat('clear'), { opt: true, ph: '0', title: '透明度 0–0.95（選填）：寫了 ⇒ 半透明的平面（玻璃；TASK-0753），反光照粗糙度' })]), el('td', {}, [chk(P.concat('smooth'))]), el('td', {}, [num(P.concat('pen'), { opt: true, ph: '—', title: '擊穿門檻（選填）：每格板厚要幾 kJ（船殼硬度 3 時）。寫了 ⇒ 實心彈照能量與入射角判穿／凹／彈，爆裂彈炸在外面（TASK-0621）；鐵甲 230' })]), el('td', { text: u.join('、') || '—' }), el('td', {}, [rm])]));
+    });
+  }
+  $('bMat').onclick = function () {
+    var id = $('mNew').value.trim();
+    if (!MAT_ID.test(id)) return say(['材質 ID：小寫英文開頭、只有小寫英文數字底線（例 elm、steel、wood_pine）'], true);
+    if (C.materials.list[id]) return say(['已經有 ' + id], true);
+    C.materials.list[id] = { name: id, kind: 'other', density: 0.7, hard: 1, flammable: 0 };
+    $('mNew').value = ''; touch(); render(); say(['✓ 加了 ' + id + '（名字、分類、數字照實改；儲存並重建之後遊戲才吃得到）']);
+  };
+  function fmtInfo(i) {
+    if (!i) return '⚠ VoxelKit/_cache 裡沒有這艘的 .vxk（重建會失敗）⇒ 重新匯入';
+    return i.voxels.toLocaleString() + ' 格 · checksum ' + i.checksum + ' · ' + i.size.join('×') + ' · 繩 ' + i.ropes + ' 帆 ' + i.sails + ' 模型 ' + i.models + ' · 匯出 ' + i.exported_at + ' · ' + (i.bytes / 1e6).toFixed(2) + ' MB';
+  }
+  function renderShips() {
+    var box = $('ships'); box.innerHTML = '';
+    C.ships.forEach(function (s, i) {
+      var P = ['ships', i], card = el('div', { 'class': 'ship', id: 'ship-' + s.id });
+      var up = el('button', { text: '↑', title: '往前（第一艘 ＝ 預設的船）' }), dn = el('button', { text: '↓' }), rm = el('button', { text: '從清單拿掉', title: '主選單不再列這艘；.vxk 留在 _cache' }), re = el('button', { text: '重新匯入', 'class': 'pri' });
+      up.disabled = i === 0; dn.disabled = i === C.ships.length - 1; re.disabled = busy || dirty; if (dirty) re.title = '先儲存或放棄修改';
+      up.onclick = function () { var t = C.ships[i - 1]; C.ships[i - 1] = C.ships[i]; C.ships[i] = t; touch(); renderShips(); };
+      dn.onclick = function () { var t = C.ships[i + 1]; C.ships[i + 1] = C.ships[i]; C.ships[i] = t; touch(); renderShips(); };
+      rm.onclick = function () { if (C.ships.length < 2) return say(['至少要留一艘'], true); if (!confirm('把「' + s.name + '」從船隻清單拿掉？（儲存並重建之後主選單就不列它）')) return; C.ships.splice(i, 1); touch(); renderShips(); };
+      re.onclick = function () { if (!confirm('從雕刻作品 ' + s.work + ' 重新匯出「' + s.name + '」並重建？')) return; call('/api/reimport', { id: s.id, work: s.work }); };
+      var nm = txt(P.concat('name')); nm.style.width = '140px';
+      card.appendChild(el('h3', {}, [el('span', { 'class': 'sp', text: (i === 0 ? '★ ' : '') + s.name + '（' + s.id + '）' }), up, dn, rm, re]));
+      card.appendChild(el('div', { 'class': 'meta', text: '內嵌 #' + s.el + ' ← _cache/' + s.vxk + '　·　建造者 ' + (s.author || '（沒記 ⇒ admin.py authors）') + '　·　' + fmtInfo(S.ships[s.id]) }));
+      card.appendChild(shipGuns(s));
+      var g1 = el('div', { 'class': 'grid' });
+      g1.appendChild(fld('名字', [nm]));
+      var wk = txt(P.concat('work')); wk.style.width = '220px'; g1.appendChild(fld('雕刻作品', [wk]));
+      g1.appendChild(fld('設計水線 z（作品沒有水線 meta 時）', [num(P.concat('zw0'), { opt: true, ph: '63' })]));
+      var ms = sel(P.concat('material'), [['', '（預設：' + (C.materials.list[C.materials.default] || {}).name + '）']].concat(Object.keys(C.materials.list).map(function (k) { return [k, C.materials.list[k].name + '（' + k + '）']; })));
+      if (!s.material) ms.value = '';
+      ms.addEventListener('change', function () { if (!ms.value) delete C.ships[i].material; touch(); renderMats(); });
+      g1.appendChild(fld('全船預設材質（子作品可以在雕刻那側用 meta material 換）', [ms]));
+      var vm = (S.ships[s.id] || {}).materials || [];
+      if (vm.length) g1.appendChild(fld('子作品的材質（.vxk）', [el('span', { text: vm.map(function (k) { return C.materials.list[k] ? C.materials.list[k].name + '（' + k + '）' : '⚠ ' + k + '（材質表沒有 ⇒ 照全船預設）'; }).join('、') })]));
+      card.appendChild(g1);
+      card.appendChild(el('h4', { text: '船隻設定（空白 ＝ 滑桿預設）' }));
+      var g2 = el('div', { 'class': 'grid' });
+      SHIP_CFG.forEach(function (r) { g2.appendChild(fld(r[1], [num(P.concat('cfg', r[0]), { opt: true, ph: String(C.lim[r[0]][2]), after: function () { tidy(i, 'cfg'); } })])); });
+      card.appendChild(g2);
+      card.appendChild(el('h4', { text: '船員配置（空白 ＝ 上面的預設）' }));
+      var g3 = el('div', { 'class': 'grid' });
+      CREW.forEach(function (r) { g3.appendChild(fld(r[1], [num(P.concat('crew', r[0]), { opt: true, ph: String(C.crew0[r[0]]), after: function () { tidy(i, 'crew'); } })])); });
+      // 船隻配置頁（遊戲裡；TASK-0570）的預設：預備水手人數、各砲種的砲班滿編（空白 ＝ 基準 × 倍率／砲種表）
+      var hk = s.crew && s.crew.handsK !== undefined ? s.crew.handsK : C.crew0.handsK;
+      g3.appendChild(fld('預備水手（人；空白 ＝ 基準 × 倍率）', [num(P.concat('crew', 'hands'), { opt: true, ph: String(Math.round(C.lim.hands[2] * hk)), after: function () { tidy(i, 'crew'); } })]));
+      Object.keys(C.guns).forEach(function (t) { g3.appendChild(fld('砲班：' + C.guns[t].name + '（' + C.guns[t].min + '–8）', [num(P.concat('crew', 'guns', t), { opt: true, ph: String(C.guns[t].crew), after: function () { tidyIn(i, 'crew', 'guns'); tidy(i, 'crew'); } })])); });
+      card.appendChild(g3);
+      card.appendChild(el('h4', { text: '高度與範圍（空白 ＝ 上面的預設）' }));
+      var g4 = el('div', { 'class': 'grid' });
+      GEO.forEach(function (r) {
+        var d = C.geo0[r[0]], ph = r[2] === 2 ? (d ? [String(d[0]), String(d[1])] : ['推', '推']) : null;
+        g4.appendChild(fld(r[1], r[2] === 2 ? pair(P.concat('geo', r[0]), false, ph).map(function (x) { x.addEventListener('input', function () { tidy(i, 'geo'); }); return x; })
+          : [num(P.concat('geo', r[0]), { opt: true, ph: String(d), after: function () { tidy(i, 'geo'); } })]));
+      });
+      card.appendChild(g4);
+      box.appendChild(card);
+    });
+  }
+  /** 船隻卡片的「砲」那一列：各砲種幾門（.vxk 裡數的），點了跳到砲的設定頁那一種；「這艘的砲 →」只列這艘的。 */
+  function shipGuns(s) {
+    var g = (S.ships[s.id] || {}).guns, row = el('div', { 'class': 'meta guns' });
+    if (!g) { row.textContent = '砲：（讀不到 .vxk）'; return row; }
+    row.appendChild(el('span', { text: '砲：' }));
+    Object.keys(g).forEach(function (k) { row.appendChild(el('a', { href: '#guns/' + k, text: ((C.guns[k] || {}).name || k) + ' × ' + g[k] })); });
+    if (!Object.keys(g).length) row.appendChild(el('span', { text: '（沒有）' }));
+    else row.appendChild(el('a', { href: '#guns?ship=' + s.id, text: '這艘的砲 →' }));
+    return row;
+  }
+  function pen(k) { var v = (C.pen || {})[k]; return typeof v === 'number' ? v : PEN_DEF[k]; }
+  function penP(x) { var lo = pen('lo'), hi = pen('hi'); return x <= lo ? 0 : x >= hi ? 1 : Math.pow((x - lo) / (hi - lo), pen('k')); }
+  function pct(p) { return p >= 1 ? '100%' : p <= 0 ? '0%' : p < 0.001 ? '<0.1%' : (p * 100).toFixed(p < 0.1 ? 1 : 0) + '%'; }
+  /** 一種砲照現在填的數字算給人看：能量、裝填、打木頭、打每一種有擊穿門檻的材質、爆裂彈。 */
+  function gunCalc(k) {
+    var g = C.guns[k], m = typeof g.shot === 'number' ? g.shot : pen('ref'), V = g.V, E = 0.0005 * m * V * V, Es = 0.0005 * m * 28 * 28, h = 3, rows = [];
+    var hk0 = C.lim.hard ? C.lim.hard[2] : 1; h = 3 * hk0;   // 船殼硬度倍率（1 ＝ 只看材質）× 基準 3（遊戲 05_material.js HARD_BASE）
+    rows.push(['能量', E.toFixed(0) + ' kJ（彈重 ' + m + ' kg × 初速 ' + V + ' m/s）']);
+    rows.push(['裝填', '約 ' + (RELOAD_S * g.reload).toFixed(1) + ' 秒（砲班滿編；人少照比例變慢）' + (g.burst > 1 ? '，一次 ' + g.burst + ' 發' : '')]);
+    rows.push(['打橡木', '大約鑽掉 ' + Math.round(Math.max(0, E - Es) / (pen('wood') * h / 3)) + ' 單位（1 單位 ≈ 1 格橡木；24 磅長砲約 200）']);
+    var ks = Math.cbrt(m / pen('ref')), shell = [];
+    Object.keys(C.materials.list).forEach(function (id) {
+      var mt = C.materials.list[id], hk = Math.pow(h * mt.hard / 3, -pen('shellHard')), R = pen('shellR') * ks * hk - (mt.pen > 0 ? 1 : 0);
+      if (mt.pen > 0) {
+        var need1 = mt.pen * h / 3, cr = Math.cos(pen('rico') * Math.PI / 180);
+        rows.push(['打' + mt.name, [0, 30, 50].map(function (a) { var c = Math.cos(a * Math.PI / 180); return (a ? a + '°' : '正面') + ' ' + pct(penP(E * c * c / need1)); }).join('　') + '　（板厚 1 格）；2 格正面 ' + pct(penP(E / (2 * need1))) + '；超過 ' + pen('rico') + '° 彈開']);
+        var fh = C.lim.funhard ? C.lim.funhard[2] : 1;   // 娛樂玩法：擊穿門檻 × funhard
+        if (fh !== 1) rows.push(['　娛樂（×' + fh + '）', [0, 30, 50].map(function (a) { var c = Math.cos(a * Math.PI / 180); return (a ? a + '°' : '正面') + ' ' + pct(penP(E * c * c / (need1 * fh))); }).join('　') + '　；2 格正面 ' + pct(penP(E / (2 * need1 * fh)))]);
+      }
+      if (mt.kind === 'wood' && id !== C.materials.default) return;
+      shell.push(mt.name + ' ' + (R > 0.3 ? R.toFixed(1) + ' 格' : '炸不動'));
+    });
+    var r0 = Math.cbrt(3 * m / (4 * Math.PI * 7800)), uwD = Math.log(V / 28) * r0 / pen('uwDrag');   // 水下：v ＝ V·e^(−uwDrag·x／r) ⇒ 掉到 28 m/s 走多遠（落水那一刻還有初速時；實際落水前已經慢了）
+    rows.push(['落水後', m >= pen('uwMin') ? '繼續走，最多約 ' + uwD.toFixed(1) + ' m（半徑 ' + (r0 * 100).toFixed(0) + ' cm；打得到水線下）' : '一落水就沒了（彈重 < ' + pen('uwMin') + ' kg）']);
+    rows.push(['爆裂彈半徑', shell.join('　') + '（船殼硬度 ×' + hk0 + '；24 磅打橡木 ' + pen('shellR') + ' 格）']);
+    return el('table', { 'class': 'calc' }, rows.map(function (r) { return el('tr', {}, [el('th', { text: r[0] }), el('td', { text: r[1] })]); }));
+  }
+  /** 砲的設定頁：#guns 全部、#guns/<種類> 跳到那一種、#guns?ship=<船> 只列那艘船用到的。 */
+  function renderGuns() {
+    var h = location.hash, m = /^#guns(?:\/([\w-]+))?(?:\?ship=([\w-]+))?/.exec(h), only = null, focus = m && m[1];
+    var P = $('gpPen'); P.innerHTML = '';
+    PEN_F.forEach(function (r) { P.appendChild(fld(r[1], [num(['pen', r[0]], { opt: true, ph: String(PEN_DEF[r[0]]), after: function () { if (C.pen && !Object.keys(C.pen).length) delete C.pen; calcAll(); } })])); });
+    var ship = m && m[2] ? C.ships.filter(function (s) { return s.id === m[2]; })[0] : null;
+    if (ship) only = (S.ships[ship.id] || {}).guns || {};
+    $('gpFilter').innerHTML = '';
+    if (ship) $('gpFilter').appendChild(el('span', {}, [el('span', { text: '只列「' + ship.name + '」用到的砲（' + Object.keys(only).map(function (k) { return ((C.guns[k] || {}).name || k) + ' × ' + only[k]; }).join('、') + '）　' }),
+      el('a', { href: '#guns', text: '列全部' }), el('span', { text: '　' }), el('a', { href: '#ship-' + ship.id, text: '回到這艘的船隻設定' })]));
+    var box = $('gpCards'); box.innerHTML = '';
+    Object.keys(C.guns).forEach(function (k) {
+      if (only && !only[k]) return;
+      var g = C.guns[k], card = el('div', { 'class': 'gcard' + (focus === k ? ' hl' : ''), id: 'gun-' + k }), use = [];
+      C.ships.forEach(function (s) { var n = ((S.ships[s.id] || {}).guns || {})[k]; if (n) use.push(el('a', { href: '#ship-' + s.id, text: s.name + ' × ' + n })); });
+      card.appendChild(el('h3', {}, [el('span', { text: g.name }), el('span', { 'class': 'k', text: k + '　代號 ' + g.code })]));
+      var gr = el('div', { 'class': 'grid' });
+      [['code', '代號（meta gun 的值）', 's'], ['name', '名字', 's'], ['short', '簡稱', 's'], ['shot', '彈重 kg（能量 ＝ ½ × 彈重 × 初速²）', 'o'], ['V', '初速 m/s', 'n'], ['reload', '裝填倍率（1 ＝ 7 秒）', 'n'],
+       ['big', '大彈（洞 × 1.25）', 'b'], ['hole', '洞倍率（空白 ＝ 1）', 'o'], ['crew', '砲班滿編（最多 8）', 'n'], ['min', '最少人數', 'n'], ['mass', '重量 噸', 'n'],
+       ['hpK', '血量倍率（空白 ＝ 1；整座鐵甲砲塔才調）', 'o'], ['burst', '連發（發；空白 ＝ 1）', 'o'], ['burstGap', '連發間隔 秒（空白 ＝ 0.15）', 'o']].forEach(function (f) {
+        var p = ['guns', k, f[0]], w = f[2] === 's' ? txt(p) : f[2] === 'b' ? chk(p) : num(p, f[2] === 'o' ? { opt: true, ph: f[0] === 'shot' ? String(pen('ref')) : f[0] === 'burstGap' ? '0.15' : '1', after: function () { calcAll(); } } : { after: function () { calcAll(); } });
+        if (f[2] === 's') w.style.width = '120px';
+        gr.appendChild(fld(f[1], [w]));
+      });
+      if (DMG_Q[k] && C.lim[DMG_Q[k]]) gr.appendChild(fld('每發傷害（打砲、帆、人；滑桿 ' + DMG_Q[k] + ' 的預設）', [num(['lim', DMG_Q[k], 2])]));
+      card.appendChild(gr);
+      var cw = el('div', { 'class': 'cw' }); cw.appendChild(gunCalc(k)); card.appendChild(cw);
+      card.appendChild(el('div', { 'class': 'use meta' }, [el('span', { text: '裝在：' })].concat(use.length ? use : [el('span', { text: '（沒有船用到）' })])));
+      box.appendChild(card);
+    });
+    if (!box.children.length) box.appendChild(el('p', { 'class': 'note', text: '這艘船沒有讀到砲（.vxk 不在、或模型沒有 meta gun）' }));
+  }
+  function calcAll() { Object.keys(C.guns).forEach(function (k) { var c = $('gun-' + k); if (c) { var cw = c.querySelector('.cw'); cw.innerHTML = ''; cw.appendChild(gunCalc(k)); } }); }
+  /** 兩頁：#guns… ⇒ 只看砲的設定頁；其他 ⇒ 全部設定（砲的設定頁收起來）。#ship-<id> ⇒ 捲到那艘船。 */
+  function route() {
+    var g = /^#guns/.test(location.hash);
+    Array.prototype.forEach.call(document.querySelectorAll('main > section'), function (sc) { if (!sc.classList.contains('keep')) sc.hidden = g; });
+    $('gunPage').hidden = !g; $('roomsWrap').hidden = g;
+    $('navGuns').classList.toggle('on', g); $('navAll').classList.toggle('on', !g);
+    if (!C) return;
+    if (g) {
+      renderGuns();
+      var f = /^#guns\/([\w-]+)/.exec(location.hash), c = f && $('gun-' + f[1]);
+      if (c) c.scrollIntoView({ block: 'start' }); else window.scrollTo(0, 0);
+    } else if (/^#ship-/.test(location.hash)) { var sc2 = $(location.hash.slice(1)); if (sc2) sc2.scrollIntoView({ block: 'start' }); }
+  }
+  window.addEventListener('hashchange', route);
+  /** 船底下的 cfg／crew／geo 全空 ⇒ 拿掉那一塊（設定檔只寫跟預設不一樣的）。 */
+  function tidy(i, k) { var o = C.ships[i][k]; if (o && !Object.keys(o).length) { delete C.ships[i][k]; touch(); } }
+  function tidyIn(i, k, k2) { var o = C.ships[i][k]; if (o && o[k2] && !Object.keys(o[k2]).length) { delete o[k2]; touch(); } }
+  function say(lines, bad) { var p = $('log'); p.innerHTML = ''; lines.forEach(function (l) { var s = el('span', { text: l + '\n' }); if (bad) s.className = 'e'; p.appendChild(s); }); p.scrollTop = 0; }
+  function errs(list) { var u = $('errs'); u.innerHTML = ''; (list || []).forEach(function (e) { u.appendChild(el('li', { text: e })); }); }
+  function api(path, body) {
+    return fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin': '1' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); });
+  }
+  function load(keepLog) {
+    return api('/api/state').then(function (st) {
+      S = st; C = JSON.parse(JSON.stringify(st.config)); C0 = st.committed; dirty = false; render(); roomsPush();
+      if (!keepLog) say(['讀了 ' + st.paths.config, '成品：' + st.paths.out, C0 ? '黃底 ＝ 跟版控（git HEAD）裡的不一樣' : '版控裡還沒有這份設定檔 ⇒ 不標黃底']);
+    }).catch(function () { $('banner').style.display = 'block'; $('st').textContent = '讀不到設定（要由 admin.py serve 開）'; ['bSave', 'bBuild', 'bBoth', 'bRevert', 'bImport'].forEach(function (k) { $(k).disabled = true; }); });
+  }
+  function call(path, body, then) {
+    busy = true; status(); errs([]); say(['執行中…（匯出與建置可能要十幾秒）']);
+    return api(path, body).then(function (r) {
+      busy = false;
+      var lines = r.log.join('\n').split('\n');
+      if (!r.ok) { say(lines, true); errs(lines.filter(function (l) { return /^\s*✗/.test(l); }).map(function (l) { return l.replace(/^\s*✗\s*/, ''); })); status(); return false; }
+      say(lines); return then ? then() : load(true).then(function () { say(lines); return true; });
+    }).catch(function (e) { busy = false; say(['連不上 admin.py：' + e], true); status(); return false; });
+  }
+  // 甲板與艙房：編輯器分頁準備好（cb-ready，記住是哪一個分頁）或這裡重讀設定 ⇒ 把每艘船的預設送過去（cb-defaults）；它改了 ⇒ 送回那一型（cb-rooms）⇒ 照收、標成還沒存
+  var roomsWin = null;                                               // 開著的編輯器分頁（cb-ready 送來的那一個；關了 ⇒ 不送）
+  function roomsPush() { if (roomsWin && !roomsWin.closed && C) { try { roomsWin.postMessage({ kind: 'cb-defaults', rooms: C.ships.reduce(function (o, s) { o[s.id] = s.rooms; return o; }, {}) }, location.origin); } catch (e) { /* 分頁關了 */ } } if (C) roomsSum(); }
+  function roomsSum() { $('roomsSum').textContent = C.ships.map(function (s) { var n = Object.keys(s.rooms || {}).length, c = C0 && !same(s.rooms, (C0.ships.filter(function (x) { return x.id === s.id; })[0] || {}).rooms); return s.name + '：' + (n ? n + ' 間有寫' : '沒寫（艙房空著、甲板照舊）') + (c ? '（跟版控不一樣）' : ''); }).join('；'); }
+  window.addEventListener('message', function (ev) {
+    if (ev.origin !== location.origin || !ev.data || !C) return;
+    if (ev.data.kind === 'cb-admdef') {                              // 細節設定頁（?admin=defaults）送來：存成出廠預設（op save，lim）或重建（op build）；道具設定頁（?admin=furn）：op furn，furn⇒ 呼叫 admin.py、結果送回去
+      var src = ev.source, reply = function (r) { try { src.postMessage({ kind: 'cb-admdef-r', ok: !!r.ok, log: r.log || [] }, location.origin); } catch (e) { /* 分頁關了 */ } };
+      if ((ev.data.op === 'save' || ev.data.op === 'furn' || ev.data.op === 'keys') && dirty) return reply({ ok: false, log: ['⚠ 設定後台這一頁有還沒存的修改 ⇒ 先存或還原，再存出廠預設（不然兩邊會互相蓋掉）'] });
+      var ep = ev.data.op === 'build' ? ['/api/build', {}] : ev.data.op === 'furn' ? ['/api/furniture', { furn: ev.data.furn, drv: ev.data.drv }] : ev.data.op === 'keys' ? ['/api/keys', { keys: ev.data.keys }] : ['/api/defaults', { lim: ev.data.lim }];   // furn：道具設定頁（67_furncfg.js，?admin=furn；drv ＝ 動力件）
+      call(ep[0], ep[1], function () { return load(true).then(function () { return true; }); })
+        .then(function (ok) { reply({ ok: ok, log: $('log').textContent.split('\n').filter(function (l) { return l; }) }); });
+      return;
+    }
+    if (ev.data.kind === 'cb-ready') { roomsWin = ev.source; return roomsPush(); }
+    if (ev.data.kind !== 'cb-rooms') return;
+    var s = C.ships.filter(function (x) { return x.id === ev.data.id; })[0]; if (!s) return;
+    if (ev.data.rooms && Object.keys(ev.data.rooms).length) s.rooms = ev.data.rooms; else delete s.rooms;
+    touch(); roomsSum();
+  });
+  function saveCfg() { return call('/api/config', { config: C }, function () { return load(true).then(function () { return true; }); }); }
+  $('bSave').onclick = function () { saveCfg().then(function (ok) { if (ok) say(['✓ 存了 config/game.json —— 重建之後遊戲才吃得到']); }); };
+  $('bRooms').onclick = function () { var w = window.open('/game?admin=rooms', 'cbRooms'); if (w) w.focus(); };   // 甲板與艙房編輯器：獨立分頁（同名 ⇒ 已經開著就切過去）；它 cb-ready 時才算連上
+  $('bDetDef').onclick = function () { window.open('/game?admin=defaults', '_blank'); };
+  $('bKeysDef').onclick = function () { window.open('/game?admin=keys', '_blank'); };   // 鍵位的出廠預設值：遊戲的鍵位設定頁（66_keys.js keysAdmUI），一樣經過這一頁存（cb-admdef op keys）
+  $('bFurnDef').onclick = function () { window.open('/game?admin=furn', '_blank'); };   // 道具的出廠預設值：遊戲的道具設定頁（67_furncfg.js furnAdmUI），一樣經過這一頁存（cb-admdef op furn）   // 出廠預設值：遊戲的細節設定頁（69_prefs.js admDefUI），開新分頁；它存檔、重建都經過這一頁（cb-admdef）
+  $('bBuild').onclick = function () { if (dirty && !confirm('有還沒存的修改；重建只照磁碟上的設定檔。照樣重建？')) return; call('/api/build', {}); };
+  $('bBoth').onclick = function () { saveCfg().then(function (ok) { if (ok) call('/api/build', {}); }); };
+  $('bRevert').onclick = function () { if (confirm('丟掉還沒存的修改？')) load(); };
+  $('bImport').onclick = function () {
+    var w = $('iWork').value.trim(), id = $('iId').value.trim(), nm = $('iName').value.trim();
+    if (!w || !id || !nm) return say(['雕刻作品 ID、代號、名字都要填'], true);
+    if (dirty) return say(['先儲存或放棄修改，再匯入（匯入會寫設定檔）'], true);
+    call('/api/import', { work: w, id: id, name: nm }).then(function (ok) { if (ok) { $('iWork').value = $('iId').value = $('iName').value = ''; } });
+  };
+  window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  load();
+})();
+</script>
+</body>
+</html>
