@@ -1,1 +1,0 @@
-判定：Tim本輪明示「540 完成(含子單) 然後 把新的 VXK 接進遊戲」，據此收束先前保留的手動動態驗收與全船簽收。原始獨立幾何、反向對照與歷史動態FAIL／限制完整保留，不改寫成自動測試全部PASS。憑據：a60b038、b5bfb12及design/acceptance_20261021、design/rudder_bearing_20261021；TASK-0603此前已由Tim後台結單。球在Sirius完成0546、0540結單與工作記憶歸檔，然後以目前Blocksail/external/Blockside dev流程接入新VXK、verify/shipcheck並回讀成品。
