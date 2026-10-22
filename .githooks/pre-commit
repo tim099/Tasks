@@ -1,0 +1,5 @@
+#!/bin/sh
+# 區塊職責：提交前擋「成品 index.html 跟來源對不上」（TASK-0674）—— 規則寫在 src/admin.py 的 act_srccheck。
+# 裝法：python -I src/admin.py hooks（core.hooksPath = .githooks）。沒有 python ⇒ 照實說、不擋。
+command -v python >/dev/null 2>&1 || { echo "成品檢查：找不到 python，沒檢查"; exit 0; }
+exec python -I src/admin.py srccheck --hook pre-commit

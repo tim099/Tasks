@@ -1,0 +1,953 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!-- 加入主畫面 ⇒ 全螢幕（Tim 2026-10-17，照臺北狂飆：「我加了Blockside沒辦法全螢幕 但那款可以」）：iPhone 的 Safari 不給網頁全螢幕，
+     從主畫面的圖示開才沒有網址列與工具列 —— 要 apple-mobile-web-app-capable 與 manifest（display:fullscreen）。manifest 與圖示是根目錄的檔（manifest.webmanifest、icons/），
+     不內嵌（不是遊戲的依賴：畫廊彈窗讀不到也照玩）。狀態列 black；viewport-fit=cover ⇒ 拿得到真正的安全區（env(safe-area-inset-*)），畫面照它收邊見下面 #stage 那一段。 -->
+<meta name="theme-color" content="#0d1218">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Blockside">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<title>Blockside（方舷）</title>
+<style>
+  :root{ --modeFs:13px; --ink:#f3ead8; --dim:#b9ae98; --gold:#e8c26a; --blue:#6f9bff; --red:#ff6f6f; --panel:rgba(14,18,24,.72); }
+  html,body{ margin:0; height:100%; background:#0d1218; color:var(--ink); overflow:hidden;
+    font-family:"Noto Sans TC","Microsoft JhengHei","PingFang TC",sans-serif;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }   /* 手機長按不選字、不跳拷貝選單（Tim 2026-10-13）；右鍵／長按選單在 71_input.js 擋 */
+  html{ touch-action:manipulation; -webkit-text-size-adjust:100%; text-size-adjust:100%; }   /* 手機瀏覽器不自動放大小字（iOS 的 text-size-adjust、Android Chrome 的 font boosting；Tim 2026-10-16）*/   /* iPhone 點兩下不放大（Tim 2026-10-15）：touch-action 實際生效的是自己與所有祖先的交集 ⇒ 設在根上整頁都關掉雙擊縮放；捲動、雙指縮放照舊，遊戲畫面的 none 照舊；⛔ iOS 不一定照做 ⇒ 71_input.js 另外擋第二下 touchend */
+  input, textarea, select{ -webkit-user-select:text; user-select:text; -webkit-touch-callout:default; }   /* 彈種倍率表要能打字 */
+  /* 安全區（Tim 2026-10-17：「手機全螢幕後 下方UI需要往上一點(不然很難操作) 有辦法判別嗎」「可以重構UI架構優化」「橫板不用改」）：
+     裝置的邊（瀏海、圓角、iPhone 底部的 home 條）只在這裡處理一次 —— #stage 照 --sa-* 收邊，裡面的 HUD、畫布全部照 #stage 排 ⇒ 各自的 bottom:12px 不用再加安全區。
+     橫式：底邊照舊 0（Tim：橫板不用改）；左右照安全區收（跟以前沒開 viewport-fit=cover 時 iOS 自己補的邊一樣）。
+     直式：底邊 ＝ home 條的安全區（從主畫面開才有；瀏覽器裡是 0），直式手機下面那一團一律用 html.navlow 的排法（羅盤在最下排，見下面 #navBox 那一段；61_hud.js botFit）。
+     ⛔ 別在個別元件上再加安全區：會算兩次。要貼著整個螢幕的（全頁彈窗、fixed 的鈕）用 --sa-* 自己加。JS 量「畫面多大」量 #stage（stageBox，71_input.js），⛔ 不用 innerWidth／innerHeight。 */
+  :root{ --sa-t:env(safe-area-inset-top, 0px); --sa-r:env(safe-area-inset-right, 0px); --sa-b:env(safe-area-inset-bottom, 0px); --sa-l:env(safe-area-inset-left, 0px); }
+  @media (orientation:landscape){ :root{ --sa-b:0px; } }
+  #stage{ position:fixed; top:var(--sa-t); right:var(--sa-r); bottom:var(--sa-b); left:var(--sa-l); }
+  /* 轉場（?map=@host，03_camera.js camTrans）：鏡頭從正上方降下來／拉上去的時候介面先藏起來 */
+  #stage.trans > :not(#cv){ opacity:0 !important; pointer-events:none !important; transition:opacity .4s; }
+  canvas{ position:absolute; inset:0; width:100%; height:100%; display:block; cursor:crosshair; touch-action:none; }   /* 手機：拖曳 ＝ 轉鏡頭、雙指張合 ＝ 縮放、雙指一起拖 ＝ 平移（⛔ 不關 ⇒ 瀏覽器拿去捲頁面） */
+  .hud{ position:absolute; pointer-events:none; font-size:13px; line-height:1.5; text-shadow:0 1px 2px #000; }
+  .panel{ background:var(--panel); border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:8px 12px; }
+  /* 艦隊（TASK-0552）：我方的圓形按鈕沿左邊往下排、敵方沿右邊往下排（Tim 2026-10-14；排不下 ⇒ 往畫面中間再開一欄），
+     中間一欄 ＝ 一艘的詳細資訊（點按鈕才有）＋ 廣播（61_hud.js fleetHud）。左邊讓出左下的羅盤。 */
+  .fleet{ top:12px; display:flex; flex-direction:column; flex-wrap:wrap; align-content:flex-start; gap:7px; max-height:calc(100vh - 110px); pointer-events:auto; }
+  #fleetL{ left:12px; } #fleetR{ right:12px; flex-wrap:wrap-reverse; align-items:flex-end; }
+  .sb{ position:relative; width:66px; height:66px; border-radius:50%; cursor:pointer; box-shadow:0 2px 7px rgba(0,0,0,.65); transition:transform .12s, box-shadow .12s; }
+  .sb:hover{ transform:scale(1.07); box-shadow:0 0 0 2px rgba(255,255,255,.55), 0 2px 9px rgba(0,0,0,.7); } .sb:active{ transform:scale(.94); }
+  .sb.on{ box-shadow:0 0 0 3px var(--gold), 0 2px 10px rgba(0,0,0,.7); } .sb.out{ opacity:.75; }
+  .sb canvas{ position:absolute; inset:0; width:100%; height:100%; cursor:pointer; touch-action:manipulation; }
+  /* 艦隊圓鈕兩側的數字（Tim 2026-10-14）：左下 ＝ 還能動的船員、右下 ＝ 還在的砲；像素圖示（HUD 美術）或 emoji，壓在外圈上 */
+  .sbn{ position:absolute; top:100%; margin-top:-1px; display:flex; align-items:center; gap:1px; color:#f2f2f2; font:bold 11px/13px Consolas,monospace; pointer-events:none; white-space:nowrap; z-index:1;   /* 沒有底板、描黑邊（Tim 2026-10-14）；放在圓圈底下不蓋圓環 */
+    text-shadow:-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 3px rgba(0,0,0,.9); }
+  .fleet .sb{ margin-bottom:12px; }   /* 底下那一行數字的位置 */
+  .sigb{ width:40px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:18px; cursor:pointer; background:rgba(20,26,36,.82); border:1px solid #556; box-shadow:0 2px 7px rgba(0,0,0,.65); } .sigb.on{ border-color:var(--gold); background:rgba(80,64,20,.9); }   /* 🚩 旗號（TASK-0679）：我方那一欄最上面 */
+  #sigP{ position:absolute; left:84px; top:12px; display:none; z-index:7; pointer-events:auto; width:min(250px, calc(100vw - 110px)); padding:8px 10px; } #sigP.on{ display:block; }
+  @media (max-width:760px){ #sigP{ left:50px; width:min(250px, calc(100vw - 105px)); } #sigBtns button{ padding:5px 8px; font-size:13px; } }   /* 手機：別蓋到右邊敵方那一欄（38 px 圓鈕 ＋ 5 px） */
+  #sigH{ font-size:13px; margin-bottom:4px; } #sigX{ float:right; cursor:pointer; padding:0 4px; } #sigBtns button{ display:block; width:100%; text-align:left; margin:3px 0; padding:6px 9px; font-size:14px; cursor:pointer; } #sigBtns button.on{ background:var(--gold); color:#111; border-color:var(--gold); } #sigNow{ font-size:12px; opacity:.85; margin-top:4px; }
+  .sbn.l{ left:-2px; } .sbn.r{ right:-2px; } .sbn .ico{ width:12px; height:12px; vertical-align:0; } .sbn i{ font-style:normal; font-size:10px; }
+  /* 船隻配置頁最上面（Tim 2026-10-14）：大一點的艦隊圓鈕＋重要資訊 */
+  #shipCard{ display:flex; align-items:center; justify-content:center; gap:14px; flex-wrap:wrap; margin:6px auto 4px; max-width:660px; }
+  #shipCardC{ position:static; inset:auto; width:150px; height:150px; flex:none; } #shipCardT{ text-align:left; font-size:14px; line-height:1.75; min-width:220px; flex:1; } #shipCardT b{ color:var(--gold); font-weight:normal; } #shipCardT .h{ font-size:17px; color:var(--gold); } #shipCardT .n{ color:var(--dim); font-size:12px; }
+  .sbres{ font-size:12px; color:var(--dim); background:var(--panel); border-radius:10px; padding:2px 8px; }
+  #topC{ left:50%; top:12px; transform:translateX(-50%); width:max(280px, min(900px, calc(100vw - 200px))); display:flex; flex-direction:column; align-items:center; }
+  #info{ display:none; pointer-events:auto; cursor:pointer; border-left:3px solid var(--blue); margin-bottom:6px; max-width:100%; box-sizing:border-box; }
+  #info h3::after{ content:''; display:block; clear:both; }
+  #info .bar{ max-width:100%; }   /* 血條最多跟那一欄一樣寬（⛔ 固定寬 ⇒ 窄的時候伸進右欄） */
+  #info .fold.gm{ padding:0; overflow:hidden; } #info .fold.gm i{ font-style:normal; padding:0 6px; display:inline-block; } #info .fold.gm i.on{ color:#111; background:var(--gold); }   /* 旁邊那張圖：砲位｜損壞（61_hud.js GMAP_MODE） */
+  #info .dmgsum{ margin-top:2px; }
+  .nv{ display:inline-block; text-align:right; font-variant-numeric:tabular-nums; }   /* 一個數字一格（61_hud.js nv）：寬度固定、等寬數字 ⇒ 數字變了旁邊的字不跟著跳 */
+  #info .fold.see.on{ color:#111; background:var(--gold); }   /* 「🎥 看這艘」：正在看 ⇒ 實心 */
+  #info .fold{ float:right; margin-left:12px; cursor:pointer; color:var(--gold); font-size:12px; font-weight:normal; border:1px solid rgba(232,194,106,.55); border-radius:4px; padding:0 7px; }
+  #info .cls{ color:var(--dim); font-weight:normal; font-size:.85em; }
+  #info .pcols{ display:flex; flex-wrap:wrap; gap:4px 20px; } #info .pc{ flex:1 1 200px; min-width:0; }   /* 橫向兩欄（TASK-0564） */
+  #info .legend{ color:var(--dim); font-size:11px; margin-top:2px; }
+  #irow{ display:flex; align-items:flex-start; justify-content:center; gap:8px; max-width:100%; }   /* 詳細資訊＋旁邊的砲位圖（窄螢幕排到下面） */
+  #icol{ flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }   /* 詳細資訊＋底下的廣播一欄（Tim 2026-10-16：訊息貼著上方面板；⛔ 以前廣播排在整列底下 ⇒ 被旁邊的砲位圖撐到很下面）；面板收起 ⇒ 只剩廣播、照舊在最上面 */
+  #gmap{ position:static; inset:auto; display:none; flex:none; max-width:100%; height:auto; margin:0 0 6px; cursor:pointer; pointer-events:auto; }   /* 砲位圖：直接鋪在畫面上（沒有底框；61_hud.js gmapDraw） */
+  .hud h3{ margin:0 0 2px; font-size:14px; }
+  .hud h3 .disp{ color:var(--dim); font-weight:normal; font-size:.85em; margin-left:1em; }   /* 排水量（61_hud.js panel）；窄螢幕自己一行 */
+  .bar{ height:5px; background:rgba(255,255,255,.15); border-radius:3px; overflow:hidden; margin:2px 0 4px; width:170px; }
+  .bar i{ display:block; height:100%; background:var(--gold); }
+  .bar.water i{ background:#4fb3d9; }
+  /* 下方（TASK-0567，Tim 2026-10-14；電腦與手機同一種排法）：左下 ＝ 帆與左舵（左舵最左、收帆、加帆）；右下 ＝ 開砲與右舵（單門、齊射、右舵最右）；
+     左右再往裡各兩顆（Tim 2026-10-15：為了對稱）：左 ＝ 6 拋錨／起錨、7 左錨（最裡）；右 ＝ 8 右錨（最裡）、G 自動開砲。
+     中間一欄 ＝ 羅盤＋面板：由上到下 ＝ 🎥 鏡頭／⏸ 停格／⚙ 設定（Tim 2026-10-15：改成圖示；Q 瞄準搬進設定面板 —— 很少用、害手機換行）＋航行 4／5（航行併進設定列）、砲列、彈種（設定那一列跟彈種隔著砲列 ⇒ 不會誤觸）。手機只是縮小、兩組改成直的（左舵、右舵在最下面靠角落）。 */
+  .helm{ display:flex; gap:8px; pointer-events:auto; flex:none; position:relative; z-index:2; }   /* 帆與舵（左）、開砲與舵（右）兩組大圓鈕：貼著中間的主面板（#ctlRow；Tim 2026-10-14：⛔ 以前貼畫面兩邊） */
+  #ctlRow{ display:flex; align-items:flex-end; justify-content:center; gap:8px; max-width:100%; }
+  .kb.hb{ width:64px; height:64px; margin:0; padding:0; border-radius:50%; display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.25; font-size:12px;
+    background:rgba(14,18,24,.78); border:1px solid rgba(255,255,255,.32); box-shadow:0 2px 7px rgba(0,0,0,.6); }
+  .ball{ display:inline-block; width:.95em; height:.95em; border-radius:50%; vertical-align:-.12em; background:radial-gradient(circle at 34% 30%, #e4e9ee 0, #8a939d 20%, #3a4048 58%, #15181c 100%); box-shadow:0 0 0 1px rgba(255,255,255,.4); }   /* 實心彈的鐵球（Tim 2026-10-15：白點換掉；CSS 畫 ⇒ 每支手機長一樣） */
+  .kb.hb .em{ font-size:17px; line-height:1.1; letter-spacing:-1px; white-space:nowrap; } .kb.hb .em .ico{ width:16px; height:16px; }   /* 圖示（Tim 2026-10-15：舵、帆、錨、開砲、航行都改 emoji；砲用艦隊圓鈕砲數那個符號 sbIcon(3)）*/
+  .kb.hb b{ font-size:11px; } .kb.hb i{ font-style:normal; } .kb.hb.on{ color:#111; background:rgba(159,199,255,.92); border-color:#9fc7ff; } .kb.hb.on b{ color:#4a3500; } .kb.hb.dis{ opacity:.45; } .kb.hb.waste{ border-style:dashed; border-color:#ff9a7a; } .kb.hb.waste .em{ opacity:.75; }   /* 拋錨、左右錨、自動開砲：亮著 ＝ 開（錨在水裡）、灰 ＝ 錨打壞了 */
+  #botC{ left:50%; bottom:12px; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; gap:6px; width:max-content; max-width:calc(100vw - 24px); }   /* ⛔ 不寫 width ⇒ left:50% 的絕對定位只剩半個畫面寬，主面板被兩組大圓鈕擠成一條 */
+  #ctl{ text-align:center; min-width:0; box-sizing:border-box; }
+  #ctl b{ color:var(--gold); }
+  /* 一整排（Tim 2026-10-15：「射界外搬走之後，下方面板可以改成一整排按鈕攤在下面」）：沒有底框，🎥 ⏸ ⚙ 🤖☸ ＋ 彈種 ⚫ 💣 ⛓️ 一列；每顆自己帶深色半透明底（壓在海上看得清楚） */
+  #ctl.panel{ display:flex; align-items:flex-end; justify-content:center; flex-wrap:nowrap; gap:8px; background:none; border:none; box-shadow:none; padding:0; }
+  #hostBack{ display:none !important; } body.bsHost #hostBack{ display:flex !important; }   /* 🌍 回到地球儀：只有 ?map=@host（Blocksail 地球儀開的）才有（08_seabed.js bedHostBack；Tim 2026-10-20「回到地球儀 … 加到下排圓形按鈕」「用emoji的地球儀」） */
+  #keys, #ammo{ display:flex; align-items:flex-end; flex-wrap:nowrap; gap:8px; } #guns{ display:none; }   /* 下排也是大圓鈕（Tim 2026-10-15：比較好按）：🎥 ⏸ ⚙ ⚓⚓ ＋ 彈種一顆（點一下換下一種、顯示現在的彈種） */
+  #ammo span, .chip, .kb{ pointer-events:auto; cursor:pointer; user-select:none; -webkit-user-select:none; touch-action:manipulation; }
+  .kb{ display:inline-block; margin:3px 2px 0; padding:2px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.26); background:rgba(255,255,255,.07); font-size:12px; }   /* 按鍵提示就是按鈕（手機也能點） */
+  .kb b, .chip b{ color:var(--gold); } .chip.on b{ color:#4a3500; }
+  .kb:active, .kb.down{ background:rgba(232,194,106,.38); }
+  #modeT{ font-size:var(--modeFs); line-height:1.2; white-space:nowrap; color:#f2f2f2; margin:0;   /* 羅盤上方（有船頭砲 ⇒ 船頭砲上方）：瞄準模式＋鏡頭，空心字直接壓在海上（Tim 2026-10-14） */
+    text-shadow:-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 -1px 0 #000, 0 1px 0 #000, -1px 0 0 #000, 1px 0 0 #000, 0 0 4px rgba(0,0,0,.8); }
+  #modeT b{ color:var(--gold); font-weight:normal; }
+  .chip{ display:inline-block; margin:2px 3px 0; padding:0 8px; border-radius:10px; border:1px solid rgba(255,255,255,.2); color:var(--dim); font-size:12px; }
+  .chip.on{ color:#111; background:#9fc7ff; border-color:#9fc7ff; }
+  #guns{ margin-top:4px; font-size:12px; }
+  /* 兩舷的砲（Tim 2026-10-14）：貼著羅盤左右兩邊往外長（左舷在左、右舷在右；船頭那門靠羅盤）；沒有字、沒有底板（符號描黑邊直接壓在畫面上）；每層砲甲板一行、最上層在上；
+     對得到目標的那一舷靠羅盤那一側一條金線。掛在羅盤（#nav）上、上下置中（⛔ 放進 #botC 的排版裡 ⇒ 手機那一欄太窄，羅盤被擠小） */
+  /* 砲太多伸到大圓鈕那邊 ⇒ 壓在按鈕底下（Tim 2026-10-14）：.gside z-index 1、.helm 2（兩個都在 #botC 這個疊放層裡） */
+  #nav{ position:relative; } .gside{ z-index:1; position:absolute; top:50%; transform:translateY(-50%); font-family:Consolas,monospace; letter-spacing:0; white-space:nowrap; pointer-events:none; padding:0 4px;
+    text-shadow:-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 3px rgba(0,0,0,.9); }
+  #gunsL{ right:100%; border-right:3px solid transparent; text-align:right; } #gunsR{ left:100%; border-left:3px solid transparent; text-align:left; }
+  #gunsL.on{ border-right-color:var(--gold); } #gunsR.on{ border-left-color:var(--gold); }
+  #teleBox{ left:12px; bottom:30px; height:max-content; display:flex; flex-direction:column; align-items:center; gap:3px; z-index:3; } #teleBox > *{ flex:none; }   /* ⛔ canvas 的通用規則是 absolute、inset 0（遊戲畫面用）⇒ #telc 要自己蓋回 static，跟 #navc 一樣。俥鐘（TASK-0630；Tim 2026-10-16：橫版放左下角（除錯那一行 #tip 上面）、直版手機貼在左邊那一欄大圓鈕上方（31_drive.js teleFit）；額外動力的船才顯示） */
+  #telc{ position:static; inset:auto; width:34px; height:112px; display:block; pointer-events:auto; touch-action:none; cursor:pointer; image-rendering:pixelated; }
+  #teleBox .kb.tk{ margin:0; padding:0 4px; font-size:10px; line-height:16px; border-radius:5px; white-space:nowrap; } #teleBox .kb.tk b{ margin-right:1px; }   /* 上下兩顆快捷鍵（點 ＝ 按 E／T；按鍵時亮）*/
+  /* 砲的符號固定大小（Tim 2026-10-14）：每門一個 --gc 見方的格子、符號置中 ⇒ 不管字型（手機沒有 Consolas）、符號（● 跟 ◌ 寬不一樣）或圖示，都一樣大 */
+  /* 一排放不下（畫面窄、砲多）⇒ 從羅盤那一側接著換行（左舷 rtl ⇒ 每一行都從靠羅盤那邊開始排），換下去的那幾行壓在大圓鈕底下（Tim 2026-10-14） */
+  #botC{ --gc:12px; } .gside{ width:max-content; max-width:calc(50vw - 85px); }   /* ⛔ 只給 max-width ⇒ 收縮寬度照 #nav（74 px）算、一行只排一門 */
+  .gend{ line-height:0; }
+  .gside > div{ display:flex; flex-wrap:wrap; gap:1px 0; margin:0 0 3px; } .gside > div:last-child{ margin-bottom:0; } #gunsL > div{ direction:rtl; }
+  .gside > div > span, .gend > span{ display:inline-block; width:var(--gc); height:var(--gc); line-height:var(--gc); font-size:var(--gc); text-align:center; vertical-align:top; flex:none; overflow:visible; } .gend{ display:flex; gap:0; }
+  .gside > div > span:not(.ico), .gend > span:not(.ico){ width:calc(var(--gc) * .8); }   /* 左右再擠一點（Tim 2026-10-14：不重疊就好）：● ◌ 約 .55 字寬 ⇒ 格子 .8 不會碰在一起；圖示版維持正方形（⛔ 窄了貼圖會被壓扁） */
+  .gside .gk3, .gend .gk3{ font-size:calc(var(--gc) * .85); } .gside .gk4, .gend .gk4{ font-size:calc(var(--gc) * .68); }   /* ✕ 約 .8 字寬、△ 約 1.1 字寬（Chrome 量的）⇒ 縮到放得進 .8 的格子 */
+  /* 羅盤那一團（說明字、船頭砲、羅盤、船尾砲）往下壓、貼在下方面板上（Tim 2026-10-14）：61_hud.js botFit 照 #ctl 的頂調 margin-bottom（負的 ⇒ 落進兩組大圓鈕之間） */
+  #navBox{ display:flex; flex-direction:column; align-items:center; gap:1px; }
+  /* 直式手機（html.navlow，61_hud.js navLow；Tim 2026-10-17「是否可以iphone直畫面全螢幕時 把羅盤放到最下排」「羅盤跟炮提示統一到畫面下方」）：
+     最下排整排只留給羅盤（＋兩舷的砲數點）—— 羅盤只看不按，放在 home 條上面剛好；按鈕全部從羅盤上方開始排：C P O 4 R（#ctl）與左右兩欄（#helmL／#helmR）的 margin-bottom ＝ #navBox 多高（botFit 量；Tim「最下方全部留給羅盤空間 按鈕從羅盤上方開始排」）；
+     狀態文字（#modeT）不跟著羅盤下去，放在 C P O 4 R 上面（--lowup ＝ 那一排的高度＋間距，botFit 寫）。 */
+  html.navlow #navBox{ position:relative; }
+  html.navlow #modeT{ position:absolute; left:50%; bottom:calc(100% + var(--lowup, 56px)); transform:translateX(-50%); width:max-content; max-width:calc(100vw - 120px); text-align:center; }
+  .gend{ font-family:Consolas,monospace; letter-spacing:0; white-space:nowrap; margin:0; padding:1px 2px;
+    text-shadow:-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 3px rgba(0,0,0,.9); }   /* 船頭砲（羅盤上）、船尾砲（羅盤下）：同上，沒有底板 */
+  #gunsB{ border-bottom:2px solid transparent; } #gunsA{ border-top:2px solid transparent; } #gunsB.on{ border-bottom-color:var(--gold); } #gunsA.on{ border-top-color:var(--gold); }
+  .gr{ font-family:Consolas,monospace; font-size:12px; letter-spacing:1px; white-space:nowrap; display:inline-flex; align-items:center; vertical-align:middle; }
+  .gr .grd{ display:inline-block; text-align:left; line-height:1.25; }   /* 砲列：每層砲甲板一行、上下疊（61_hud.js gunRow） */
+  .g-full{ color:#8fe388; } .g-short{ color:#f2c14e; } .g-none{ color:#7d838c; } .g-dead{ color:#e0574a; } .g-wet{ color:#7fc8ff; }
+  .gside .aim, .gend .aim{ position:relative; }   /* 這門現在開打得中（61_hud.js gunCell aim ← 21_gunnery.js gunAims；Tim 2026-10-19「炮可以射擊到敵人時 是否可以有額外標示」）：符號底下壓一個半透明的金色圓（Tim 2026-10-19「標示方法有問題會變成一堆點 是否可以改成一個半透明黃圓圈 壓在原本的炮指示圈下」）。⛔ 以前用 text-shadow／drop-shadow 往四周偏移描金 ⇒ 圖示版的點狀圖示每一點都被複製一圈，看起來是一堆金點 */
+  .gside .aim, .gend .aim{ text-shadow:none; -webkit-text-stroke:2px #000; paint-order:stroke fill; }   /* 金色圓上的黑描邊改成原地描（Tim 2026-10-20 截圖：「在亮黃光時 原本的三角形與圓圈會變成點狀」）：.gside／.gend 的黑描邊是四個斜角各偏 1 px 的 text-shadow ⇒ 在深色海面上糊成一圈邊看不出來，壓在金色圓上每一份都看得見 —— ◌ 的每一點長成一叢、△ 疊成鐘形。text-stroke 沿字形外框描、paint-order 先描再填 ⇒ 只露出外面 1 px、形狀不複製 */
+  .gside .aim::before, .gend .aim::before{ content:''; position:absolute; left:50%; top:50%; width:calc(var(--gc) * 1.05); height:calc(var(--gc) * 1.05); transform:translate(-50%, -50%); border-radius:50%; background:rgba(232, 194, 106, .55); z-index:-1; pointer-events:none; }   /* z-index −1 ⇒ 畫在這一層（.gside 有 transform、.gend 下面給 z-index 0）的最底、符號與圖示底下；⛔ 給 .aim 自己 z-index ⇒ 圓會蓋在圖示版的貼圖（背景）上面 */
+  .gend{ position:relative; z-index:0; }   /* 給上一行的金色圓一個疊放層（不然 z-index −1 會掉到羅盤那一團後面） */
+  .ico.g-full{ box-shadow:inset 0 -2px 0 #8fe388; } .ico.g-short{ box-shadow:inset 0 -2px 0 #f2c14e; } .ico.g-none{ box-shadow:inset 0 -2px 0 #7d838c; } .ico.g-dead{ box-shadow:inset 0 -2px 0 #e0574a; }
+  #msg{ width:100%; font-size:var(--modeFs); font-weight:700; text-align:center; line-height:1.45; }   /* 廣播：兩邊面板中間那一欄，一則一行、最多 5 行、各自淡掉（⛔ 寬到蓋住兩邊面板） */
+  #msg div{ margin:0 0 1.5px; transition:opacity .4s; }   /* 字的大小跟羅盤上方那行資訊（#modeT）一樣、跟著 --modeFs（Tim 2026-10-16；以前 7／8 px，最新那行大一號；更早 14／16 px）*/
+  #tip{ left:12px; bottom:12px; color:var(--dim); font-size:12px; }
+  /* 遊戲內的設定面板（⚙ 設定、Esc）：打開時暫停；重新開始、回主選單、畫質與物理的三四檔、帆繩物理、鏡頭跟船、靜音、FPS（Tim 2026-10-13：手機下方列省空間） */
+  #gset{ left:50%; top:50%; transform:translate(-50%,-50%); display:none; text-align:center; padding:14px 16px; width:min(92vw,460px); box-sizing:border-box; pointer-events:auto; z-index:6;
+    max-height:calc(100% - 16px); overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }   /* ⛔ 只給 max-width：left:50% ⇒ 最多只有半個螢幕寬、每一列都折行。
+     比畫面高 ⇒ 面板裡捲（Tim 2026-10-17：「設定選單 在手機上會超出畫面導致按不到 繼續 重新開始 回主選單」—— 以前沒有高度上限、置中 ⇒ 上下各超出一截，頂端那一列在畫面外） */
+  #gset .gsTop{ position:sticky; top:-14px; z-index:1; margin:-14px -16px 0; padding:14px 16px 2px; background:rgba(14,18,24,.96); border-radius:8px 8px 0 0; }   /* 標題＋繼續／重新開始／回主選單：捲下去也釘在面板頂端（底色不透明 ⇒ 捲過去的列不會透出來） */
+  #gset{ scrollbar-width:thin; scrollbar-color:rgba(232,194,106,.75) rgba(255,255,255,.08); }   /* 捲軸看得見（Tim：「可能可以加 Slider?」）：金色細條 ⇒ 一看就知道下面還有 */
+  #gset::-webkit-scrollbar{ width:8px; } #gset::-webkit-scrollbar-track{ background:rgba(255,255,255,.08); border-radius:4px; margin:8px 0; } #gset::-webkit-scrollbar-thumb{ background:rgba(232,194,106,.75); border-radius:4px; }
+  @media (max-height:520px){ #gset{ padding:8px 10px; } #gset .gsTop{ top:-8px; margin:-8px -10px 0; padding:8px 10px 2px; } #gset .gsR{ margin:5px 0; } #gset .gsT{ margin-bottom:2px; } #gset .gsT .note{ display:none; } #gset .chip.big{ padding:5px 14px; } }   /* 手機橫放（矮）：列距收、標題的說明藏 */
+  #gset.on{ display:block; }
+  #gsetBg{ position:absolute; inset:0; display:none; background:rgba(0,0,0,.25); z-index:5; } #gsetBg.on{ display:block; }   /* 面板外點一下就關（蓋住整個畫面，含下方的 ⚙ 設定；Tim 2026-10-13） */ #gset .gsT{ font-size:16px; color:var(--gold); margin-bottom:6px; } #gset .note{ color:var(--dim); font-size:12px; }
+  #gset .gsR{ margin:9px 0; display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:5px; } #gset .gsL{ color:var(--dim); font-size:13px; margin-right:2px; }
+  #gset .gsV{ display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--dim); } #gset .gsV input{ width:90px; accent-color:var(--gold); }   /* 音量（TASK-0677） */
+  #gset .chip{ font-size:14px; padding:4px 12px; margin:0; } #gset .chip.big{ font-size:15px; padding:6px 16px; } #gset .chip.dis{ opacity:.45; } #gset #boomB{ color:#ff9a7a; border-color:rgba(255,120,90,.55); }   /* dis：這個頁面不給全螢幕 */
+  #fps{ position:static; margin-bottom:3px; font:12px Consolas,monospace; color:#bfe9ff; text-shadow:0 0 3px #000, 0 0 3px #000; display:none; z-index:5; }
+  #fps.on{ display:block; }
+  #slowB{ left:50%; bottom:150px; transform:translateX(-50%); font-size:15px; font-weight:700; color:#ffd27a; letter-spacing:2px; text-shadow:0 0 4px #000, 0 0 4px #000; display:none; }   /* 殉爆的慢動作（73_slowmo.js）：放在下方操作列上面（⛔ 上方 ⇒ 殉爆那一刻廣播一次好幾則，疊在一起） */
+  #slowB.on{ display:block; }
+  #obsB{ left:14px; bottom:78px; font-size:13px; color:var(--gold); letter-spacing:1px; text-shadow:0 0 4px #000, 0 0 4px #000; white-space:nowrap; display:none; }   /* 沒停格時開著的觀察模式（透視、剖面、甲板；72_floodui.js obsText）：左下、操作列上面（⛔ 正中間 ⇒ 壓到羅盤） */
+  #obsB.on{ display:block; }
+  #gfxItems .row{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:2px; font-size:14px; } #gfxItems label{ width:6em; text-align:right; margin-right:6px; }
+  #gfxItems button{ font-size:13px; padding:4px 10px; margin:2px; }
+  /* 畫質頁照分類收起來（js/07_gfx.js GFX_CATS、71_input.js gfxUI）：標題一行寫那一類現在的設定，點了展開 */
+  #gfxItems details.gcat{ border:1px solid rgba(255,255,255,.18); border-radius:6px; margin:6px 0; background:rgba(255,255,255,.03); }
+  #gfxItems details.gcat>summary{ cursor:pointer; list-style:none; display:flex; align-items:baseline; gap:10px; padding:8px 12px; text-align:left; }
+  #gfxItems details.gcat>summary::-webkit-details-marker{ display:none; }
+  #gfxItems details.gcat>summary::before{ content:'▸'; color:var(--gold); width:1em; flex:none; } #gfxItems details.gcat[open]>summary::before{ content:'▾'; }
+  #gfxItems details.gcat>summary b{ flex:none; min-width:7.5em; } #gfxItems details.gcat>summary .note{ font-size:13px; line-height:1.4; }
+  #gfxItems details.gcat[open]>summary{ border-bottom:1px solid rgba(255,255,255,.12); } #gfxItems .gcb{ padding:6px 4px 8px; }
+  /* 陰影細項（畫質頁；js/07_gfx.js SHK_ITEMS，71_input.js shkUI）：按鈕列跟上面一樣；分段那一條照 Unity 的 Cascade splits（Tim 2026-10-21 給的圖），顏色跟陰影範圍線同一套 */
+  #shkItems .row.bt{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:2px; font-size:14px; } #shkItems .row.bt label{ width:8em; text-align:right; margin-right:6px; }
+  #shkItems button{ font-size:13px; padding:4px 10px; margin:2px; } #shkItems .dim{ opacity:.4; } #shkItems h3{ margin:14px 0 4px; }
+  #shkBar{ display:flex; height:38px; max-width:640px; margin:6px auto 2px; border:1px solid rgba(255,255,255,.4); border-radius:4px; overflow:hidden; font-size:12px; }
+  #shkBar>div{ position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#111; line-height:1.15; overflow:hidden; white-space:nowrap; min-width:0; }
+  #shkBar>div>span{ position:relative; z-index:1; } #shkBar .bl{ position:absolute; top:0; bottom:0; right:0; background:repeating-linear-gradient(135deg,rgba(0,0,0,.3) 0 4px,transparent 4px 8px); }
+  #phxItems .row{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:2px; font-size:14px; } #phxItems label{ width:6em; text-align:right; margin-right:6px; }
+  #phxItems button{ font-size:13px; padding:4px 10px; margin:2px; }
+  #nav{ padding:3px; border-radius:50%; }   /* 羅盤：只剩圓盤（TASK-0566；文字搬進詳細資訊 navText），在下方中間那一欄（TASK-0567） */ #navt{ display:none; }
+  #navc{ position:static; inset:auto; width:130px; height:130px; display:block; margin:0; cursor:pointer; pointer-events:auto; touch-action:manipulation; border-radius:50%; }   /* 羅盤可以按（Tim 2026-10-15）：跟按艦隊的我艦圓鈕一樣開／收詳細資訊 */
+  /* 手機直拿：跟電腦同一種排法，只是縮小 —— 艦隊按鈕 38 px、左右兩組打舵開砲改成直的一欄、中間一欄窄一點 */
+  @media (max-width:760px){
+    .fleet{ top:6px; gap:4px; max-height:calc(100vh - 175px); } #fleetL{ left:5px; } #fleetR{ right:5px; }
+    #botC{ --gc:9px; } .gside{ max-width:calc(50vw - 48px); } .helm{ gap:5px; } #helmL{ flex-direction:column-reverse; } #helmR{ flex-direction:column; } #ctlRow{ gap:2px; width:100%; }
+    .kb.hb{ width:46px; height:46px; font-size:10px; } .kb.hb b{ font-size:9px; } .kb.hb .em{ font-size:12px; letter-spacing:-1.5px; } .kb.hb .em .ico{ width:11px; height:11px; }
+    .sbn{ font-size:8px; line-height:10px; } .sbn .ico{ width:8px; height:8px; } .sbn i{ font-size:7px; } .sbn.l{ left:-5px; } .sbn.r{ right:-5px; } .fleet .sb{ margin-bottom:10px; }   /* 圓鈕 38 px：兩個數字往外擠一點才不會碰在一起 */ #shipCardC{ width:120px; height:120px; } #shipCardT{ font-size:13px; }
+    #botC{ bottom:16px; width:calc(100vw - 22px); max-width:none; gap:4px; }   /* 兩側與底下的大圓鈕往內 8 px、往上 10 px（Tim 2026-10-15：iPhone 只在很角落連點兩下會放大 ⇒ 離開螢幕圓角與系統手勢區；⛔ 以前 bottom 6、寬 100vw − 6） */ #topC{ top:6px; }   /* 面板撐滿兩組大圓鈕之間（Tim：⛔ 留太寬 ⇒ 按鈕被擠得換行） */ .sb{ width:38px; height:38px; } .sbres{ font-size:10px; padding:1px 5px; }
+    #topC{ width:calc(100vw - 96px); } #info{ font-size:11px; padding:5px 8px; } #info h3{ font-size:12px; } #info .pcols{ gap:2px 8px; } #info .pc{ flex-basis:110px; } #info .legend{ display:none; } #irow{ gap:4px; }   /* 手機：砲位圖窄（船頭朝上），跟卡片並排 */   /* 砲列在窄的卡片裡換行（⛔ 不換 ⇒ 伸到右邊的按鈕底下） */
+    #navc{ width:68px; height:68px; } :root{ --modeFs:12px; }   /* 羅盤上方那行資訊與廣播（#modeT、#msg）*/
+    #ctl{ flex:1; padding:0; } #ctl.panel, #keys, #ammo{ gap:2px; } #guns .gr{ white-space:normal; word-break:break-all; } #tip{ display:none; }   /* 砲列在窄面板裡換行 */
+    .hud h3 .disp{ display:block; margin-left:0; } }                                     /* 排水量換到船名下一行（⛔ 同一行 ⇒ 面板縮半之後「現在 …」被切掉） */
+  /* 手機橫拿（矮）：面板與控制列都縮 */
+  @media (max-height:520px) and (min-width:761px){
+    .sb{ width:50px; height:50px; } #fleetL{ max-height:calc(100vh - 170px); } #info{ transform:scale(.8); transform-origin:center top; }
+    #botC{ transform:translateX(-50%) scale(.82); transform-origin:center bottom; } .kb.hb{ width:52px; height:52px; } #tip{ display:none; }
+    #navc{ width:83px; height:83px; } }   /* 羅盤跟直式一樣大（Tim 2026-10-17「橫版羅盤是否可以維持跟直版的一樣尺寸」「目前手機橫版的羅盤會變大」）：直式 68 px、不縮；這裡整團 scale .82 ⇒ 68 ÷ .82 ≈ 83 */
+  /* 中等寬度（761–1100 px，平板、小筆電、手機橫拿）：一整排 15 顆 64 px ＋ 間距 8 ＝ 1072 px 放不下 ⇒ 圓鈕跟著畫面寬縮、間距 4（15 顆（各加 2 px 邊框）＋ 14 個間距 ＋ 左右各 12 ＋ 4 px 餘裕 ＝ 100vw；#keys 裡面也是間距 4）
+     ⛔ 2026-10-15 1024 寬實測：沒有這段 ⇒ ◀⚓ 蓋住 🎥、彈種鈕被 ⚓▶ 蓋住 */
+  @media (min-width:761px) and (max-width:1100px){ .kb.hb{ width:min(64px, calc((100vw - 114px) / 15)); height:min(64px, calc((100vw - 114px) / 15)); } .helm, #ctlRow, #ctl.panel, #keys{ gap:4px; } }
+  @media (min-width:761px) and (max-width:1200px){ body.bsHost .kb.hb{ width:min(64px, calc((100vw - 118px) / 16)); height:min(64px, calc((100vw - 118px) / 16)); } body.bsHost .helm, body.bsHost #ctlRow, body.bsHost #ctl.panel, body.bsHost #keys{ gap:4px; } }   /* 多一顆 🌍 ⇒ 16 顆：16 × 66 ＋ 15 × 8 ＝ 1176 px，1200 以下照樣縮 */
+  /* 手機橫拿（矮）：艦隊圓鈕改橫排、由外往內（Tim 2026-10-15：「不然會跟按鈕重疊」—— 直排往下長，撞到兩側直立的大圓鈕 ⚓▶ ◀⚓）；
+     我方從左邊往右、敵方從右邊往左；太多艘 ⇒ 往下換一排（每側最多三分之一個畫面寬） */
+  @media (orientation:landscape) and (max-height:520px){ .fleet{ flex-direction:row; flex-wrap:wrap; align-content:flex-start; max-height:none; max-width:34vw; } #fleetL{ max-height:none; } #fleetR{ flex-direction:row-reverse; flex-wrap:wrap; align-items:flex-start; } }
+  /* 主選單、結算視窗的疊放層（Tim 2026-10-18：「車鐘 會壓過彈窗」「在主畫面中 會穿透船隻資訊的船員跟炮數」）：以前兩個都沒寫 z-index ⇒ HUD 上有寫的
+     （艦隊圓鈕底下的人數／砲數 .sbn 1、砲數條 #gunsL／R 1、大圓鈕 .helm 2、俥鐘 #teleBox 3）一律畫在它們上面。⇒ 4：蓋過這些、跟停格提示／進水面板（4，DOM 在前面）也蓋得過；
+     設定（#gsetBg 5、#gset 6）、說明（6）、錯誤／確認彈窗（50／60）照樣在上面（主選單、結算時打開設定，點面板外照樣關得掉）。 */
+  #cover, #gfxov{ z-index:4; position:absolute; inset:0; display:flex; align-items:flex-start; justify-content:center; overflow-y:auto; background:radial-gradient(ellipse at 50% 40%, rgba(20,30,44,.80), rgba(5,8,12,.94)); }
+  #gfxov{ z-index:7; }   /* 畫質設定（核心自己的一層，js/71_input.js gfxPanel；TASK-0774）：在 #cover 外面、蓋過它（主選單點「畫質設定…」）、也蓋過 HUD 與設定面板（遊戲中） */
+  :is(#cover,#gfxov) .card{ max-width:680px; margin:auto; padding:22px 30px; text-align:center; }
+  body.gfxov #gfxov{ left:auto; width:min(640px,100%); background:rgba(5,8,12,.80); }   /* 遊戲中的畫質設定（js/71_input.js gfxOvOpen；#gfxov 那一層）：靠右、左邊看得到場景 */   /* margin:auto ⇒ 放得下就置中、放不下就從頂端開始捲（⛔ align-items:center 放不下會切掉上半） */
+  :is(#cover,#gfxov) h1{ margin:0 0 4px; font-size:24px; letter-spacing:2px; }   /* Tim 2026-10-13：標題小一點（30 → 24；手機 24 → 19） */
+  :is(#cover,#gfxov) .sub{ color:var(--dim); margin-bottom:14px; font-size:13px; }
+  :is(#cover,#gfxov) select{ font:inherit; font-size:13px; max-width:100%; padding:3px 6px; border-radius:6px; border:1px solid rgba(255,255,255,.25); background:#1a212b; color:var(--ink); }
+  :is(#cover,#gfxov) select option{ background:#1a212b; color:var(--ink); }
+  :is(#cover,#gfxov) .row{ margin:7px 0; }
+  #shipsel .fl{ display:inline-flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:2px 4px; vertical-align:middle; }   /* 艦隊編成（TASK-0537）：一邊一列，每艘一個選單 */
+  #shipsel .fs{ white-space:nowrap; } :is(#cover,#gfxov) #shipsel button.fx, :is(#cover,#gfxov) #shipsel button.fa{ padding:1px 7px; margin:0 0 0 2px; font-size:13px; } #fleetN{ color:var(--dim); font-size:12px; }
+  :is(#cover,#gfxov) button.fsb{ margin:0; padding:3px 8px; font-size:13px; min-width:7em; text-align:left; background:#1a212b; }   /* 一艘一顆鈕（72_shippick.js：點了開選船彈窗） */
+  :is(#cover,#gfxov) button.fsb::after{ content:' ▾'; color:var(--dim); }
+  /* 選船彈窗（72_shippick.js）：上面篩選（動力、噸位、火力、搜尋），下面卡片。接近全螢幕（Tim 2026-10-19「選艦介面是否可以改成接近全螢幕(然後右上角的x按鈕可以大一些)」）：
+     四周只留 8 px（加瀏海、圓角的安全區）、卡片填滿；✕ 44 px 見方（手指點得到的大小） */
+  #spk{ position:fixed; inset:0; z-index:45; display:none; align-items:stretch; justify-content:stretch; padding:max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); background:rgba(0,0,0,.55); }
+  #spk.on{ display:flex; }
+  #spk .card{ width:100%; height:100%; display:flex; flex-direction:column; padding:14px 16px; background:#1c2129; box-shadow:0 8px 30px rgba(0,0,0,.6); box-sizing:border-box; }
+  #spk .spkH{ display:flex; align-items:center; gap:8px; } #spk h2{ flex:1; margin:0; font-size:19px; color:var(--gold); text-align:left; }
+  #spk button{ font:inherit; font-size:14px; margin:2px; padding:4px 11px; border-radius:6px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.06); color:var(--ink); cursor:pointer; }
+  #spk button.on{ background:var(--gold); color:#111; border-color:var(--gold); }
+  #spk button#spkX{ width:44px; height:44px; margin:0; padding:0; flex:none; font-size:24px; line-height:1; }
+  #spk .spkR{ display:flex; flex-wrap:wrap; align-items:center; gap:2px; margin-top:6px; text-align:left; } #spk .spkR > span{ width:3.2em; color:var(--dim); font-size:13px; }
+  /* 篩選收起來（72_shippick.js SPK.open；Tim 2026-10-20「篩選可以折疊(預設摺疊)」）：上面只有「搜尋框＋篩選 ▾」一列，三排分類（#spkFB）展開才有；有篩選在用 ⇒ 那一顆亮金色（button.on） */
+  #spk .spkS{ display:flex; align-items:center; gap:6px; margin-top:8px; } #spk #spkFT{ flex:none; margin:0; white-space:nowrap; }
+  #spk #spkFB{ display:none; } #spk #spkF.open #spkFB{ display:block; }
+  #spk input[type=search]{ flex:1; min-width:0; font:inherit; font-size:14px; padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.3); background:rgba(0,0,0,.3); color:var(--ink); }
+  #spk .spkN{ margin:6px 0 4px; color:var(--dim); font-size:12px; text-align:left; }
+  #spk .spkG{ flex:1; min-height:0; overflow-y:auto; align-content:start; display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:8px; padding:2px; }
+  #spk button.spkC{ margin:0; padding:8px 10px; text-align:left; line-height:1.45; background:rgba(255,255,255,.05); }
+  #spk button.spkC b{ font-size:15px; } #spk button.spkC .i{ float:right; } #spk button.spkC .m{ display:block; color:var(--dim); font-size:12px; }
+  #spk button.spkC.on{ background:rgba(232,194,106,.18); color:var(--ink); border-color:var(--gold); }
+  #spk button.spkC:hover{ border-color:rgba(255,255,255,.6); }
+  /* 手機（直式窄、橫式矮；Tim 2026-10-20「手機板選船的排版 可以調整尺寸 確保上方篩選不要佔用太多空間」）：標題、✕、分類鈕、卡片都縮一號，分類一排擠得進一行；
+     搜尋框照 16 px（⛔ 小於 16 px ⇒ iPhone 點進去整頁放大） */
+  @media (max-width:760px), (max-height:520px){
+    #spk .card{ padding:10px 10px; } #spk h2{ font-size:16px; } #spk button#spkX{ width:40px; height:40px; font-size:21px; }
+    #spk button{ font-size:13px; margin:2px 1px; padding:3px 7px; } #spk .spkR{ margin-top:4px; } #spk .spkR > span{ width:2.7em; font-size:12px; }
+    #spk .spkS{ margin-top:6px; } #spk input[type=search]{ font-size:16px; padding:3px 8px; } #spk #spkFT{ padding:5px 10px; }
+    #spk .spkG{ gap:6px; } #spk button.spkC{ padding:6px 9px; line-height:1.35; } #spk button.spkC b{ font-size:14px; }
+  }
+  @media (max-width:380px){ #spk .spkR > span{ width:2.4em; } #spk .spkR button{ padding:3px 5px; } }   /* iPhone SE（375 px）：動力那一排（五顆）也擠得進一行 */
+  /* ?pick=@host（72_shippick.js）：Blocksail 地球儀的「選船」—— 只留選船彈窗、頁面透明（後面看得到地球儀） */
+  html.pickonly, html.pickonly body, html.pickonly #stage{ background:transparent; } html.pickonly body > :not(#stage), html.pickonly #stage > :not(#spk){ display:none !important; }
+  :is(#cover,#gfxov) button{ font:inherit; font-size:15px; margin:4px; padding:7px 16px; border-radius:6px; border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.06); color:var(--ink); cursor:pointer; }
+  :is(#cover,#gfxov) button.on{ background:var(--gold); color:#111; border-color:var(--gold); }
+  :is(#cover,#gfxov) button.go{ font-size:18px; padding:9px 30px; background:#b8452e; border-color:#e06a4f; }
+  :is(#cover,#gfxov) button:disabled{ opacity:.4; cursor:wait; }
+  :is(#cover,#gfxov) #discordB{ display:inline-block; font-size:15px; margin:4px; padding:7px 18px; border-radius:6px; border:1px solid #7983f5; background:#5865f2; color:#fff; text-decoration:none; cursor:pointer; }   /* Discord 的品牌紫 */
+  :is(#cover,#gfxov) #discordB:hover{ background:#4752c4; }
+  :is(#cover,#gfxov) .slide{ display:flex; align-items:center; justify-content:center; gap:10px; font-size:14px; }
+  :is(#cover,#gfxov) .slide label{ width:5em; text-align:right; }
+  :is(#cover,#gfxov) .slide input{ width:220px; accent-color:var(--gold); }
+  :is(#cover,#gfxov) .slide span{ width:13em; text-align:left; color:var(--dim); font-size:12px; }
+  #fitItems .slide label{ width:auto; flex:0 1 11em; min-width:0; }   /* 換裝（72_fitui.js）：組名長（「24 磅長砲（甲板-gun）×28」）⇒ 標籤可以縮、選單也可以縮（⛔ 照固定寬 ⇒ 手機上整列撐出畫面兩邊） */
+  #fitItems select{ flex:0 1 14em; min-width:0; max-width:60vw; } #fitItems button{ white-space:nowrap; }
+  :is(#cover,#gfxov) .checks{ display:flex; justify-content:center; flex-wrap:wrap; gap:4px 16px; font-size:13px; }
+  :is(#cover,#gfxov) .checks input{ accent-color:var(--gold); vertical-align:-2px; }
+  #strikeV{ color:var(--dim); font-size:12px; }
+  :is(#cover,#gfxov) h2{ margin:0 0 4px; font-size:24px; letter-spacing:1px; }
+  :is(#cover,#gfxov) h3{ margin:14px 0 4px; font-size:14px; color:var(--gold); border-bottom:1px solid rgba(255,255,255,.12); padding-bottom:2px; }
+  :is(#cover,#gfxov) .note{ color:var(--dim); font-size:12px; }
+  #roomItems .rm{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:4px 8px; font-size:13px; margin:5px 0; } #roomItems .rm label{ min-width:10em; text-align:right; } #roomItems .rm .rs{ color:var(--dim); font-size:12px; text-align:left; max-width:30em; } #roomItems select{ max-width:9em; }   /* 艙房一間一列（TASK-0568）；⛔ 選單不限寬 ⇒ 最長那個選項（放不下的原因）把選單撐成整排、手機多出橫向捲動 */
+  #roomItems button, #roomEd button{ font-size:13px; padding:4px 10px; margin:2px; } #roomItems button.on, #roomEd button.on{ color:#111; background:var(--gold); border-color:var(--gold); }
+  #roomEd{ margin:8px auto; max-width:660px; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:8px; } #roomEd .rt{ color:var(--gold); font-size:14px; margin-bottom:4px; } #roomEd .rn{ color:var(--dim); font-size:12px; margin:4px 0; line-height:1.5; }
+  #roomEdW{ max-width:100%; }
+  body.roomEdOn #roomEd{ position:fixed; top:calc(8px + var(--sa-t)); right:calc(8px + var(--sa-r)); bottom:calc(8px + var(--sa-b)); left:calc(8px + var(--sa-l)); z-index:50; max-width:none; margin:0; overflow-y:auto; background:#141a22; border-color:rgba(255,255,255,.3); box-shadow:0 6px 30px rgba(0,0,0,.6); }   /* 打開 ⇒ 接近全螢幕（Tim 2026-10-14） */
+  #cover #pgX{ position:fixed; top:calc(10px + var(--sa-t)); right:calc(12px + var(--sa-r)); z-index:40; display:none; margin:0; background:#e3c46a; color:#111; border-color:#e3c46a; box-shadow:0 2px 10px rgba(0,0,0,.6); } #cover #pgX.on{ display:block; }
+  #gfxov #gfxovX{ position:fixed; top:calc(10px + var(--sa-t)); right:calc(12px + var(--sa-r)); z-index:40; margin:0; background:#e3c46a; color:#111; border-color:#e3c46a; box-shadow:0 2px 10px rgba(0,0,0,.6); }   /* 畫質那一層右上角的返回（跟 #pgX 同一個樣子） */
+  #askp{ display:none; position:fixed; inset:0; z-index:60; background:rgba(0,0,0,.62); align-items:center; justify-content:center; padding:16px; } #askp.on{ display:flex; }   /* 確認彈窗（js/65_ask.js）：蓋過右上角的返回（z 40） */
+  #askp .askc{ max-width:440px; padding:18px 22px; text-align:center; }   /* ⛔ 不掛 .card：71_input.js page() 拿「#cover 裡第一個不是設定頁的 .card」當主選單 */ #askM{ color:var(--dim); font-size:14px; line-height:1.6; margin:8px 0 14px; } #cover #askY{ background:#b8452e; border-color:#e06a4f; }
+  #roomEdX2{ display:none; } body.roomEdOn #roomEdX2{ display:block; position:sticky; top:0; float:right; z-index:2; background:#e3c46a; color:#111; border-color:#e3c46a; }   /* 編輯器浮層：右上角的完成（捲動時黏在上面） */
+  #keysAdm{ display:none; } #keysp.admin #keysAdm{ display:block; color:#ffd27a; border:1px solid rgba(255,210,122,.5); border-radius:6px; padding:6px 10px; margin:6px 0; }   /* 鍵位的出廠預設值（?admin=keys） */
+  #keysItems .keyrow{ display:flex; align-items:center; gap:10px; max-width:640px; margin:4px auto; }   /* ⛔ 不套 .row.slide：那裡的 span 一律固定寬度，圖示會被撐成 156px */
+  #keysItems .keyrow label{ flex:1 1 auto; text-align:left; display:flex; align-items:center; gap:6px; } #keysItems .keyrow label small{ color:var(--dim); }
+  #keysItems .kico{ flex:0 0 3.6em; text-align:center; white-space:nowrap; letter-spacing:-.1em; } #keysItems .kcap{ flex:0 0 7.5em; text-align:center; padding:3px 8px; border:1px solid rgba(255,255,255,.35); border-radius:6px; font-weight:bold; }
+  #keysItems .kcap.wait{ color:var(--gold); border-color:var(--gold); font-weight:normal; font-size:.85em; } #keysItems .keyrow > .note{ flex:0 0 8.5em; text-align:left; font-size:.85em; }
+  @media (max-width:560px){ #keysItems .keyrow > .note{ display:none; } #keysItems .kcap{ flex-basis:5.5em; } }
+  #keysTabs button.on{ background:var(--gold); color:#111; }
+  #furnAdm{ display:none; } #furnp.admin #furnAdm{ display:block; color:#ffd27a; border:1px solid rgba(255,210,122,.5); border-radius:6px; padding:6px 10px; margin:6px 0; }   /* 道具的出廠預設值（?admin=furn） */
+  #detAdm{ display:none; } #detail.admin #detAdm{ display:block; color:#ffd27a; border:1px solid rgba(255,210,122,.5); border-radius:6px; padding:6px 10px; margin:6px 0; }   /* 出廠預設值（?admin=defaults） */
+  #shipAdm{ display:none; } #shipp.admin #shipAdm{ display:block; color:#ffd27a; } #shipp.admin .nadm{ display:none; }   /* 設定後台嵌的那一份（?admin=rooms） */ #deckItems .rm{ display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:4px 8px; font-size:13px; margin:5px 0; } #deckItems .rm label{ min-width:10em; text-align:right; } #deckItems .rm .rs{ color:var(--dim); font-size:12px; text-align:left; max-width:30em; } #deckItems button{ font-size:13px; padding:4px 10px; margin:2px; } #deckItems button.on{ color:#111; background:var(--gold); border-color:var(--gold); }
+  #roomEd canvas{ position:static; display:block; margin:6px auto; touch-action:manipulation; cursor:crosshair; }   /* ⛔ 全域的 canvas 是 absolute（遊戲畫面）⇒ 編輯器的格子會飛到頁面外 */
+  :is(#cover,#gfxov) table.ammo{ margin:4px auto; border-collapse:collapse; font-size:13px; }
+  :is(#cover,#gfxov) table.ammo th, :is(#cover,#gfxov) table.ammo td{ padding:2px 8px; } :is(#cover,#gfxov) table.ammo th{ color:var(--dim); font-weight:400; }
+  :is(#cover,#gfxov) table.ammo input{ width:62px; font:inherit; background:rgba(255,255,255,.08); color:var(--ink); border:1px solid rgba(255,255,255,.25); border-radius:4px; padding:1px 4px; text-align:right; }
+  :is(#cover,#gfxov) #detV{ color:var(--dim); font-size:12px; max-width:560px; margin:2px auto 6px; line-height:1.6; }   /* ⛔ 只寫 #detV：被 :is(#cover,#gfxov) .row 的 margin 蓋掉 */
+  .hp{ position:relative; } .hp::after{ content:''; position:absolute; left:0; bottom:-1px; height:2px; width:var(--hp); background:#e0574a; }   /* 砲列：受損的砲底下一條血條 */
+  .ico.hp::after{ bottom:-4px; }   /* 圖示版：人手狀態的底線在圖示裡面，血條放到它下面 */
+  @media (max-width:520px){ :is(#cover,#gfxov) .card{ padding:14px 12px; } :is(#cover,#gfxov) .slide input{ width:130px; } :is(#cover,#gfxov) .slide span{ width:9em; }
+    :is(#cover,#gfxov) h1{ font-size:19px; letter-spacing:1px; } :is(#cover,#gfxov) .row{ margin:5px 0; } :is(#cover,#gfxov) button{ font-size:13px; padding:5px 9px; margin:2px; } :is(#cover,#gfxov) button.go{ font-size:17px; padding:8px 30px; } }   /* 手機：按鈕小一號 ⇒ 每一列不折行、開戰鈕不被擠出畫面（Tim 2026-10-13） */
+  #load{ color:var(--dim); font-size:12px; min-height:18px; font-family:Consolas,monospace; white-space:pre-line; }
+  #help{ position:absolute; right:12px; bottom:12px; max-width:330px; font-size:12px; display:none; pointer-events:none; max-height:calc(100% - 24px); overflow-y:auto; z-index:6; }
+  /* 說明外點一下就關（蓋住整個畫面，含下方控制列；Tim 2026-10-13：手機上不好關說明） */
+  /* 停格（P；Tim 2026-10-13：暫停改叫停格，停格時才打得開進水細節頁）：上方一條；進水細節頁不蓋整個畫面 ⇒ 開著也能拖鏡頭 */
+  #frz{ left:50%; top:12px; transform:translateX(-50%); display:none; pointer-events:auto; z-index:4; padding:6px 10px; white-space:nowrap; } #frz.on{ display:block; }
+  #frz .chip{ font-size:14px; padding:4px 12px; margin:0 3px; } #frz .fz{ color:var(--gold); font-weight:700; margin-right:4px; } #frz .fzL{ color:var(--dim); margin:0 2px 0 8px; }
+  #frz .fzG{ display:inline-block; white-space:nowrap; }   /* 三組（停格／進水／船）：窄一點的畫面一組一行，⛔ 一整條 ⇒ 蓋到左右兩塊面板 */
+  @media (max-width:1280px){ #frz{ white-space:normal; width:min(94vw,360px); box-sizing:border-box; text-align:center; line-height:2.1; } }
+  #floodp{ left:50%; top:58px; transform:translateX(-50%); display:none; pointer-events:auto; z-index:4; width:min(94vw,680px); box-sizing:border-box; max-height:calc(100% - 280px); overflow-y:auto; padding:10px 12px; font-size:12px; }
+  #floodp.on{ display:block; } #floodp .hT{ display:flex; justify-content:space-between; align-items:center; color:var(--gold); font-size:14px; margin-bottom:4px; }
+  #floodp .hX{ cursor:pointer; padding:2px 10px; border:1px solid rgba(232,194,106,.55); border-radius:4px; } #floodp .fpS{ margin:6px 0 10px; } #floodp .fpH{ color:var(--gold); font-weight:700; }
+  #floodp .fpL{ color:var(--dim); margin-top:4px; } #floodp .fpC{ position:static; inset:auto; width:100%; height:auto; display:block; border-radius:3px; cursor:default; touch-action:auto; }   /* ⛔ 全域的 canvas 規則是給遊戲畫布的（絕對定位、鋪滿）⇒ 剖面四張疊在同一個位置 */
+  @media (max-width:760px){ #frz{ top:144px; white-space:normal; width:min(94vw,380px); box-sizing:border-box; text-align:center; line-height:2.1; } #frz .chip{ font-size:13px; padding:3px 9px; } #floodp{ top:188px; max-height:calc(100% - 400px); }
+    #help{ left:8px; right:8px; max-width:none; max-height:68%; } }   /* 手機：說明不佔滿 ⇒ 上面留一塊點得到的「外面」（⛔ 佔滿 ⇒ 只剩左邊一條細縫可以點） */
+  #helpBg{ position:absolute; inset:0; display:none; background:rgba(0,0,0,.25); z-index:5; } #helpBg.on{ display:block; }
+  #help .hT{ display:flex; justify-content:space-between; align-items:center; color:var(--gold); font-size:14px; margin-bottom:4px; } #help .hX{ cursor:pointer; padding:2px 10px; border:1px solid rgba(232,194,106,.55); border-radius:4px; }
+  #help.on{ display:block; pointer-events:auto; }
+  #help .hH{ color:var(--gold); font-weight:bold; margin:8px 0 2px; padding-bottom:1px; border-bottom:1px solid rgba(232,194,106,.3); }   /* 說明分段（Tim 2026-10-15：「很多改成 emoji 了，說明要更新」⇒ 先列大圓鈕的圖示，再分航行、資訊、操作、規則） */
+  #help kbd{ display:inline-block; min-width:16px; padding:0 4px; border:1px solid rgba(255,255,255,.3); border-radius:3px; font-family:Consolas,monospace; text-align:center; }
+  #help kbd[data-k]{ cursor:pointer; background:rgba(232,194,106,.16); border-color:rgba(232,194,106,.55); } #help kbd[data-k]:active{ background:rgba(232,194,106,.45); }
+  #end{ z-index:4; position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.45); }
+  #end.on{ display:flex; }
+  #end .card{ text-align:center; padding:22px 30px; }
+  #end h2{ margin:0 0 8px; font-size:26px; }
+  #end button{ font:inherit; margin:10px 6px 0; padding:6px 18px; border-radius:6px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.08); color:var(--ink); cursor:pointer; }
+  .still .hud, .still #cover, .still #gfxov, .still #help, .still #end{ display:none !important; }
+  /* 第一人稱（81_fps.js，TASK-0649；Tim 2026-10-16「下方操作面板隱藏 改為第一人稱用的操作面板」「只保留設定紐 暫停紐」）：
+     HUD 全部藏起來，只留下方那一排的 ⏸ 與 ⚙（設定面板、說明照常打得開）；換上 #fpUI。⛔ hud() 照樣在跑（只是看不見）—— 行內的 display 用 !important 壓過 */
+  #fpUI{ display:none; }
+  /* 瞄準圈（UI 層，61_hud.js aimRingUi）：translate 到瞄準點、自己往左上退一半；外圈＋中心十字（中間留空看得到對準的那一點）＋中心點，先畫一層暗邊再畫顏色 ⇒ 海上、船身上都看得清 */
+  #aimR{ position:absolute; left:0; top:0; width:48px; height:48px; margin:-24px 0 0 -24px; pointer-events:none; display:none; z-index:1; --c:#ff4a3d; }
+  #aimR.on{ display:block; } #aimR.ally{ --c:#5fb0ff; }   /* 瞄敵艦紅、瞄友艦藍（Tim 2026-10-17「瞄敵人時改紅色(友軍維持藍色)」） */
+  #aimR svg{ width:100%; height:100%; overflow:visible; } #aimR .o{ fill:none; stroke:rgba(0,0,0,.6); stroke-width:4.4; stroke-linecap:round; } #aimR .k{ fill:none; stroke:var(--c); stroke-width:2.2; stroke-linecap:round; } #aimR .d{ fill:var(--c); stroke:rgba(0,0,0,.6); stroke-width:1.2; }
+  #fpCross{ display:none; position:absolute; left:50%; top:50%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:rgba(255,255,255,.8); box-shadow:0 0 0 1px rgba(0,0,0,.45); pointer-events:none; }   /* 滑鼠模式（抓住滑鼠）時的準心 */
+  #stage.fpLock #fpCross, #stage.bld #fpCross{ display:block; }
+  /* 建造模式（82_build.js，TASK-0648；Tim 2026-10-16「UI可以選取要擺放的物件(參考常見建造遊戲UI設計 可以給物件分類)」）：
+     快捷欄（下方一排圓鈕：上快捷鍵 1–9、下 emoji；分類之間空一點）＋ 📦 目錄（分類分頁、卡片）＋ 準心下面一行說明；放 ✔／拆 ✖／轉 ⟳ 在第一人稱那一排（建造時跟隨 F／G 收起來） */
+  #bldInfo, #bldBar{ display:none; }
+  #stage.bld #bldInfo{ display:block; position:absolute; left:50%; top:calc(50% + 16px); transform:translateX(-50%); padding:3px 10px; border-radius:8px; background:rgba(10,14,22,.6); color:#eee; font-size:13px; pointer-events:none; white-space:nowrap; max-width:calc(100vw - 32px); overflow:hidden; text-overflow:ellipsis; z-index:4; }
+  #stage.bld #bldBar{ display:flex; position:absolute; left:50%; transform:translateX(-50%); bottom:92px; gap:6px; pointer-events:none; }
+  #bldBar .bslot{ pointer-events:auto; background:rgba(10,14,22,.55); } #bldBar .bslot.gap{ margin-left:10px; } #bldBar .bslot.on{ background:rgba(159,199,255,.92); }   /* 選中（⛔ 只有上一條 ⇒ 深色底蓋過圓鈕的 .on，只剩邊框，截圖量過） */
+  #fpUI .bldOnly{ display:none !important; } #stage.bld #fpUI .bldOnly{ display:flex !important; } #stage.bld #fpFol, #stage.bld #fpNext{ display:none !important; }
+  #bldCat{ position:absolute; left:50%; top:42%; transform:translate(-50%,-50%); width:min(560px, calc(100vw - 32px)); max-height:66vh; overflow:auto; z-index:8; pointer-events:auto; }
+  #bldCatH{ display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  #bldTabs{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; } #bldTabs button{ border-radius:14px; padding:4px 12px; }
+  #bldTabs button.on, .bcard.on{ background:#9fc7ff; color:#111; }
+  #bldGrid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(118px, 1fr)); gap:8px; }
+  .bcard{ position:relative; display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 6px; border-radius:10px; }
+  .bcard .bem{ font-size:30px; line-height:1.1; } .bcard small{ font-size:11px; opacity:.8; text-align:center; } .bcard i{ position:absolute; left:7px; top:5px; font-style:normal; font-size:11px; color:var(--gold); }
+  @media (max-width: 640px){ #stage.bld #bldBar{ bottom:178px; gap:4px; } #bldBar .bslot{ width:40px; height:40px; } #bldBar .bslot.gap{ margin-left:6px; } }
+  /* 船隻觀察（js/86_inspect.js，TASK-0776）：右邊的面板（剖面、甲板、透視、部件清單）＋勾了的部件掛名字（#inspL 固定在畫面上、不吃滑鼠） */
+  #inspP{ position:absolute; right:12px; top:8px; width:min(290px, calc(100vw - 32px)); max-height:calc(100vh - 142px); overflow:auto; z-index:7; pointer-events:auto; font-size:13px; padding:8px 10px; }
+  #inspH{ display:flex; justify-content:space-between; align-items:center; gap:8px; } #inspP.min #inspB{ display:none; }
+  #inspP .row{ display:flex; flex-wrap:wrap; gap:4px; margin:4px 0 6px; } #inspP button{ padding:3px 9px; border-radius:12px; font-size:12px; } #inspP button.on{ background:#9fc7ff; color:#111; }
+  #inspP .lab{ margin-top:6px; color:var(--gold); display:flex; justify-content:space-between; align-items:center; }
+  #inspP details{ margin:1px 0; } #inspP summary{ cursor:pointer; } #inspP summary i{ font-style:normal; opacity:.7; } #inspP label{ cursor:pointer; }
+  #inspP .it{ display:block; padding-left:24px; font-size:12px; opacity:.85; }
+  #inspP .sw{ display:inline-block; width:11px; height:11px; border-radius:3px; margin-right:4px; vertical-align:-1px; box-shadow:0 0 0 1px rgba(0,0,0,.6); }   /* 色票：那一種的高亮顏色（86_inspect.js inspColSync） */
+  #inspL{ position:fixed; inset:0; pointer-events:none; z-index:6; } #inspL div{ position:absolute; transform:translate(-50%,-110%); padding:1px 6px; border-radius:6px; background:rgba(12,14,20,.8); border:1px solid; color:#ffd75a; font-size:12px; white-space:nowrap; }
+  @media (max-width: 640px){ #inspP{ top:8px; left:64px; right:64px; width:auto; max-height:max(160px, calc(100vh - 394px)); } }   /* 手機：夾在左右兩排圓鈕中間、貼齊上方（Tim 2026-10-21）、底不碰到右邊那排圓鈕；一開始先收起來（86_inspect.js inspEnter） */
+  #stage.fp .hud:not(#botC):not(#gset):not(#help){ display:none !important; }
+  #stage.fp #navBox, #stage.fp #helmL, #stage.fp #helmR, #stage.fp #guns, #stage.fp #ammo, #stage.fp #keys > :not(#pauseK):not(#setB){ display:none !important; }
+  #stage.fp #fpUI{ display:block; position:absolute; left:0; right:0; bottom:64px; pointer-events:none; z-index:3; }
+  #fpUI .fpPad{ position:absolute; bottom:0; display:grid; grid-template-columns:repeat(3, 64px); grid-auto-rows:64px; gap:6px; }   /* 一格 ＝ 圓鈕 .kb.hb 的大小 */
+  /* 右下：一欄上下 #fpVert（⛔ 轉頭的搖桿 #fpJoyR 拿掉了：Tim 2026-10-17「右側轉視角的我發現用不到(螢幕任意位置都能滑動轉視角)」⇒ 這一欄搬到原本搖桿的位置）：跳／浮空上（空白）在上、浮空下（C）在下（Tim 2026-10-16「為了手機操作 空白移動到右側吧(因為左邊是搖桿 離空白太近很難跳)」）；
+     每顆照 grid-area 擺（⛔ 自動排 ⇒ 藏起來的那顆讓別的補位）；沒有第 2 列時那一欄只剩一格、貼著底 */
+  #fpUI #fpVert{ right:18px; grid-template-columns:64px; }
+  #fpJoy{ position:absolute; left:18px; bottom:0; width:136px; height:136px; border-radius:50%; background:rgba(10,14,22,.35); border:2px solid rgba(255,255,255,.22); pointer-events:auto; touch-action:none; }
+  #fpKnob{ position:absolute; left:50%; top:50%; width:58px; height:58px; margin:-29px 0 0 -29px; border-radius:50%; background:rgba(255,255,255,.32); box-shadow:0 0 0 2px rgba(255,255,255,.18); pointer-events:none; }
+  #fpUI .fpb{ pointer-events:auto; display:flex; align-items:center; justify-content:center; margin:0; padding:0; font-size:22px; border-radius:50%; background:rgba(10,14,22,.55); touch-action:none; }
+  #fpUI .fpb.down, #fpUI .fpb.on{ background:rgba(110,170,255,.45); }
+  #fpAct{ position:absolute; bottom:16px; left:50%; transform:translateX(-50%); display:flex; gap:8px; }   /* 抬 16 px：圓鈕 64 px 高（⛔ bottom 0 ⇒ 底邊壓到下面那排的 ⏸ ⚙，量過） */
+  /* 按鈕跟下面那一排一樣：圓鈕 .kb.hb、上面快捷鍵、下面 emoji、不寫字（Tim 2026-10-16「爬梯子 跳 跑 跟隨 都參考原本原鈕 顯示快捷鍵吧(同時不用文字 EMOJI表示) 然後統一用圓鈕吧」）*/
+  /* 跟隨中的小標籤（81_fps.js fpWhoHud；TASK-0720〔K11〕）：被跟的人的職位＋工作效率，貼在中間那排圓鈕上方；空的不顯示 */
+  #fpWho{ display:none; position:absolute; left:50%; transform:translateX(-50%); bottom:90px; padding:3px 10px; border-radius:8px; background:rgba(10,14,22,.6); color:#eee; font-size:13px; white-space:nowrap; max-width:calc(100vw - 32px); overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+  #fpUI.fol #fpWho:not(:empty){ display:block; }
+  #fpNext{ display:none !important; } #fpUI.fol #fpNext{ display:flex !important; }   /* 跟隨船員（TASK-0649）：跟隨中才有「下一個」；搖桿、跳、跑、爬梯子收起來 */
+  #fpUI.fol #fpJoy, #fpUI.fol #fpJump, #fpUI.fol #fpRun, #fpUI.fol #fpClimb{ display:none !important; }
+  #fpUI .fpFly{ display:none !important; } #fpUI.fly:not(.fol) .fpFly{ display:flex !important; } #fpUI.fly #fpJump{ display:none !important; }   /* 浮空：跳換成按住的 ⬆ ⬇ */
+  @media (max-width: 640px){   /* 直式手機：搖桿縮一號，中間的 🪜 ⤴ 🏃 搬到上方（⛔ 同一排 ⇒ 375 px 寬疊在一起，量過） */
+    #fpUI .fpPad{ grid-template-columns:repeat(3, 46px); grid-auto-rows:46px; gap:4px; }
+    #fpJoy{ width:112px; height:112px; left:12px; } #fpKnob{ width:48px; height:48px; margin:-24px 0 0 -24px; }
+    #fpUI #fpVert{ right:12px; grid-template-columns:46px; bottom:12px; }   /* 抬 12 px（⛔ 0 ⇒ 浮空時 C⬇ 碰到下面那排的 ⚙，截圖量過） */
+    #fpUI .fpb{ font-size:19px; }
+    #fpAct{ bottom:122px; }   /* 搖桿 112 px 高 ＋ 空一點（⛔ 108 ⇒ 跟搖桿頂疊 8 px，量過） */
+    #fpWho{ bottom:178px; }   /* 中間那排搬到上方 ⇒ 標籤跟著抬（46 px 圓鈕＋空一點） */
+  }
+  /* 擬真沙盒（84_fleetlab.js） */
+  #flab{ display:none; } body.flab #flab{ display:flex; flex-direction:column; position:fixed; inset:0; z-index:60; background:#0e1a26; color:#e8eef5; font:13px/1.45 system-ui, "Microsoft JhengHei", sans-serif; }
+  body.flab #stage > :not(#cv), body.flab #cover, body.flab #gfxov, body.flab #end{ display:none !important; }
+  body.flab.flab3d #flab{ background:transparent; pointer-events:none; } body.flab.flab3d #flabCv, body.flab.flab3d #flabBatch{ visibility:hidden; } body.flab.flab3d #flabTop, body.flab.flab3d #flabRight{ pointer-events:auto; background:rgba(14,26,38,.82); }
+  #flabTop{ display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding:7px 12px; border-bottom:1px solid rgba(255,255,255,.1); } #flabTop .fg{ display:inline-flex; gap:4px; align-items:center; flex-wrap:wrap; }
+  #flab label{ color:#9fb0c2; } #flab input, #flab select{ font:inherit; background:#1a2a3a; color:#e8eef5; border:1px solid rgba(255,255,255,.2); border-radius:5px; padding:2px 4px; } #flab input[type=number]{ width:58px; }
+  #flab button{ font:inherit; background:rgba(255,255,255,.08); color:#e8eef5; border:1px solid rgba(255,255,255,.25); border-radius:5px; padding:3px 9px; cursor:pointer; } #flab button.on{ background:#e0b453; color:#111; }
+  #flabMsg{ color:#ffd27a; } #flabMain{ flex:1; display:flex; gap:8px; min-height:0; padding:6px 10px; } #flabCv{ position:relative; left:auto; top:auto; flex:1 1 auto; min-width:0; width:auto; height:100%; border-radius:6px; touch-action:none; }   /* ⛔ 全域的 canvas 是 absolute ⇒ 蓋滿整頁、把上面的設定列與右邊的讀數擠掉（量過） */
+  #flabRight{ flex:0 0 380px; display:flex; flex-direction:column; gap:6px; min-height:0; } #flabSide{ flex:1 1 40%; overflow:auto; font-size:12px; }
+  #flab #flabChart{ position:relative; left:auto; top:auto; flex:0 0 130px; width:100%; height:130px; border-radius:5px; } #flabDet{ flex:1 1 30%; overflow:auto; font-size:12px; color:#cfd8e2; } #flabDet .hd{ cursor:pointer; padding:1px 3px; } #flabDet .hd:hover{ background:rgba(255,255,255,.07); } #flabTL{ width:min(360px, 50vw); } #flabSide .fr{ padding:2px 5px; border-left:3px solid; margin:2px 0; cursor:pointer; } #flabSide .fr.blue{ border-color:#5aa2ff; } #flabSide .fr.red{ border-color:#ff6b5a; } #flabSide .fr.out{ opacity:.5; } #flabSide .fr.sel{ background:rgba(224,180,83,.18); }
+  #flabBatch{ padding:6px 12px 10px; max-height:34vh; overflow:auto; border-top:1px solid rgba(255,255,255,.1); } #flabBtab{ border-collapse:collapse; margin-top:6px; } #flabBtab th, #flabBtab td{ border:1px solid rgba(255,255,255,.15); padding:3px 8px; text-align:center; } #flabBtab small{ color:#9fb0c2; } #flab .note{ color:#9fb0c2; font-size:12px; margin-top:6px; }
+  @media (max-width:760px){ #flabMain{ flex-direction:column; } #flabRight{ flex:0 0 auto; max-height:34vh; } #flabSide{ max-height:14vh; } #flabCv{ min-height:46vh; } }
+  /* 報錯（01_gl.js errShow；Tim 2026-10-18「報錯會一直出現在畫面上 是否可以加一個彈窗(可關閉) 以及一個回報錯誤按鈕」）：蓋在最上面、可以關 */
+  #err{ position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,.5); }
+  #err .card{ width:100%; max-width:520px; max-height:100%; overflow:auto; padding:16px 18px; text-align:left; background:#1c2129; box-shadow:0 8px 30px rgba(0,0,0,.6); }   /* 實色：.panel 是半透明，後面的主選單會透出來 */
+  #err h2{ margin:0 0 8px; font-size:20px; color:#ffb3a6; }
+  #err pre{ margin:0; max-height:30vh; overflow:auto; white-space:pre-wrap; word-break:break-word; color:#ffb3a6; font-size:13px; }
+  #err label{ display:block; margin:12px 0 4px; }
+  #err textarea{ box-sizing:border-box; width:100%; font:inherit; font-size:14px; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,.3); background:rgba(0,0,0,.3); color:var(--ink); }
+  #err .note{ margin-top:6px; font-size:12px; opacity:.75; }
+  #err .btns{ margin-top:12px; text-align:right; }
+  #err button{ font:inherit; margin:0 0 0 8px; padding:6px 16px; border-radius:6px; border:1px solid rgba(255,255,255,.3); background:rgba(255,255,255,.08); color:var(--ink); cursor:pointer; }
+  #err button.pri{ background:#b8452e; border-color:#e06a4f; }   /* 主要的那一顆：有 Discord webhook ⇒「送出回報」，沒有 ⇒「寄出」（01_gl.js errShow） */
+  #err button:disabled{ opacity:.5; cursor:default; }
+  #err label.chk{ display:inline-flex; align-items:center; gap:6px; margin:8px 0 0; font-size:13px; }
+</style>
+</head>
+<body>
+<!-- 擬真沙盒（84_fleetlab.js；?lab=fleet，根目錄 fleetlab.html 轉過來）：body.flab 才顯示；看實景（body.flab3d）時俯視圖藏起來、底下的遊戲畫布露出來 -->
+<div id="flab">
+  <div id="flabTop">
+    <b>擬真沙盒</b>
+    <span class="fg"><label>藍</label><input type="number" id="flabNB" min="1" max="20"><select id="flabHB"></select><select id="flabCB"></select><label><input type="checkbox" id="flabGB">搶上風</label></span>
+    <span class="fg"><label>紅</label><input type="number" id="flabNR" min="1" max="20"><select id="flabHR"></select><select id="flabCR"></select><label><input type="checkbox" id="flabGR">搶上風</label></span>
+    <span class="fg"><label>距離</label><input type="number" id="flabDist" min="50" max="1000" step="10"><label>風向°</label><input type="text" id="flabWdir" placeholder="照種子" size="5"><label>風速×</label><input type="text" id="flabWspd" placeholder="照種子" size="4"><label>種子</label><input type="number" id="flabSeed" min="1"></span>
+    <span class="fg"><label>物理</label><select id="flabHz"></select><label>時限</label><input type="number" id="flabT" min="30" step="30">秒</span>
+    <span class="fg"><button id="flabGo">開始</button><button id="flabPause">暫停</button><span id="flabSpd"><button data-s="1">1×</button><button data-s="4">4×</button><button data-s="16">16×</button><button data-s="64">64×</button><button data-s="0">最快</button></span><button id="flabTrace">🧭 軌跡</button><button id="flabView">🎥 看實景</button><button id="flabExp">⬇ 匯出</button></span>
+    <span id="flabTLbox" class="fg" style="display:none"><input type="range" id="flabTL" min="0" max="1" step="0.5" value="0"><span id="flabTLv"></span></span>
+    <span id="flabMsg"></span>
+  </div>
+  <div id="flabMain"><canvas id="flabCv"></canvas><div id="flabRight"><div id="flabSide"></div><canvas id="flabChart"></canvas><div id="flabDet"></div></div></div>
+  <div id="flabBatch"><label>批次：每格</label><input type="number" id="flabBN" min="1" max="100">場（一半換邊）<label><input type="checkbox" id="flabBall">四種策略兩兩（不勾 ＝ 只跑上面那一組）</label><button id="flabBgo">批次對打</button><span id="flabBprog"></span><table id="flabBtab"></table>
+    <div class="note">遊戲本體的模擬（規則、命中、進水、指揮官、艦長同一份；設定照遊戲的存檔讀、不寫回）。只關「給人看的」：帆與繩、碎木、煙與水花、船邊水花；只看俯視圖時不畫 3D。物理 60 Hz ＝ 跟遊戲逐步相同，降下來比較快但結果會不一樣。俯視圖：滾輪縮放、拖曳平移、點船選取、雙擊回到自動。批次跑的時候照最快跑。</div></div>
+</div>
+<div id="stage">
+  <canvas id="cv"></canvas>
+
+  <div id="fleetL" class="hud fleet"></div>
+  <div id="fleetR" class="hud fleet"></div>
+  <div id="sigP" class="panel"><div id="sigH"><b>🚩 旗號</b> 對我方友艦下令<span id="sigX">✕</span></div><div id="sigBtns"></div><div id="sigNow"></div></div><!-- 旗號面板（TASK-0679；71_input.js sigShow） -->
+  <div id="topC" class="hud"><div id="fps" class="hud"></div><div id="irow"><div id="icol"><div id="info" class="panel"></div><div id="msg"></div></div><canvas id="gmap"></canvas></div></div>
+  <div id="teleBox" class="hud" style="display:none"><span class="kb tk" data-act="teleFwd" data-tip="俥鐘往前撥一格"><b>T</b>▲</span><canvas id="telc" title="俥鐘（點或拖）"></canvas><span class="kb tk" data-act="teleBack" data-tip="俥鐘往後撥一格"><b>G</b>▼</span></div>
+  <div id="aimR" aria-hidden="true"><svg viewBox="-24 -24 48 48"><g class="o"><circle r="16"/><path d="M-11 0H-4M4 0H11M0 -11V-4M0 4V11"/></g><g class="k"><circle r="16"/><path d="M-11 0H-4M4 0H11M0 -11V-4M0 4V11"/></g><circle class="d" r="1.6"/></svg></div><!-- 瞄準圈（UI 層，61_hud.js aimRingUi；在 HUD 底下） -->
+  <div id="botC" class="hud"><div id="navBox"><div id="modeT"></div><div id="gunsB" class="gend"></div><div id="nav" class="panel"><canvas id="navc"></canvas><div id="navt"></div><div id="gunsL" class="gside"></div><div id="gunsR" class="gside"></div></div><div id="gunsA" class="gend"></div></div>
+  <div id="ctlRow"><div id="helmL" class="helm"><span class="kb hb" data-act="ruddL" data-hold="1" data-tip="左舵"><b>A</b><i class="em">⬅️</i></span><span class="kb hb" data-act="sailDn" data-hold="1" data-tip="收帆"><b>S</b><i class="em">⛵⬇</i></span><span class="kb hb" data-act="sailUp" data-hold="1" data-tip="加帆"><b>W</b><i class="em">⛵⬆</i></span><span class="kb hb" id="sailT" data-kl="sailMode" data-tip="自動操舵：亮 ＝ 自動、暗 ＝ 手動 —— 點一下切換"><b>2</b><i class="em">🤖☸</i></span><span class="kb hb" data-act="ancP" id="ancP" data-tip="拋左錨"><b>Q</b><i class="em">◀⚓</i></span></div><div id="ctl" class="panel">
+    <div id="keys"><span class="kb hb" data-act="cam" data-tip="換鏡頭"><b>C</b><i class="em">🎥</i></span><span class="kb hb" data-act="pause" id="pauseK" data-tip="停格"><b>P</b><i class="em">⏸</i></span><span class="kb hb" id="setB" data-kl="settings" data-tip="設定"><b>O</b><i class="em">⚙</i></span><span class="kb hb" data-act="ancAll" id="ancAll" data-tip="拋錨（雙錨）：兩邊都沒拋 ⇒ 一起拋；一邊在水裡 ⇒ 拋另一邊；兩邊都在水裡 ⇒ 起錨"><b>4</b><i class="em">⚓⚓</i></span><span class="kb hb" data-act="hostBack" id="hostBack" data-tip="回到地球儀"><b>U</b><i class="em">🌍</i></span></div>
+    <div id="guns"></div>
+    <div id="ammo"><span class="kb hb" id="ammoB" data-act="ammo" data-tip="切換彈藥"><b>R</b><i class="em"><span class="ball"></span></i></span></div>
+  </div><div id="helmR" class="helm"><span class="kb hb" data-act="ancS" id="ancS" data-tip="拋右錨"><b>E</b><i class="em">⚓▶</i></span><span class="kb hb" data-act="autoFire" id="autoF" data-tip="自動開砲"><b>5</b><i class="em">🤖💥</i></span><span class="kb hb" data-act="fire1" id="fireK" data-tip="開一門砲"><b>F</b><i class="em">💥</i></span><span class="kb hb" data-act="volley" id="volleyK" data-tip="齊射"><b>空白</b><i class="em">💥💥</i></span><span class="kb hb" data-act="ruddR" data-hold="1" data-tip="右舵"><b>D</b><i class="em">➡️</i></span></div></div></div>
+  <!-- 第一人稱的操作面板（81_fps.js；#stage.fp 才顯示）：左下虛擬搖桿（移動；鍵盤 WASD 也行、不顯示按鍵）、右下 跳（浮空：上下）；中間 🎥 離開（建造模式沒有）、跑、爬梯子；拖曳畫面也能轉頭 -->
+  <!-- 建造模式（82_build.js，TASK-0648；#stage.bld 才顯示）：準心下面一行說明、📦 目錄（分類分頁）；快捷欄在 #fpUI 裡 -->
+  <div id="bldInfo"></div>
+  <div id="inspP" class="panel" style="display:none"><!-- 船隻觀察的面板：js/86_inspect.js inspUI 生 --></div>
+  <div id="inspL"></div>
+  <div id="bldCat" class="panel" style="display:none"><div id="bldCatH"><b>📦 目錄</b><span class="kb" id="bldCatX">✕ 關（<span class="kn" data-kl="bCat">B</span>）</span></div><div id="bldTabs"></div><div id="bldGrid"></div></div>
+  <div id="fpUI">
+    <div id="bldBar"></div>
+    <div id="fpJoy"><div id="fpKnob"></div></div>
+    <div id="fpAct"><span class="kb hb fpb" id="fpExit" data-kl="fpExit" data-tip="離開第一人稱（回到原本的鏡頭）"><b>Y</b><i class="em">🎥</i></span><span class="kb hb fpb" id="fpClimb" style="display:none" data-kl="fpClimb" data-tip="爬梯子"><b>E</b><i class="em">🪜</i></span><span class="kb hb fpb" id="fpRun" data-kl="fpRun" data-tip="跑"><b>Shift</b><i class="em">🏃</i></span><span class="kb hb fpb" id="fpFol" data-kl="fpFollow" title="跟隨身邊的船員（F）"><b>F</b><i class="em">👁</i></span><span class="kb hb fpb" id="fpNext" data-kl="fpNext" data-tip="跟隨下一個"><b>G</b><i class="em">⏭</i></span><span class="kb hb fpb bldOnly" id="bldMode" data-kl="bMode" title="碰撞：一般（M 換：一般 → 穿牆 → 浮空）"><b>M</b><i class="em">🚶</i></span><span class="kb hb fpb bldOnly" id="bldRot" data-kl="bRot" data-tip="轉 90°"><b>R</b><i class="em">⟳</i></span><span class="kb hb fpb bldOnly" id="bldDel" data-kl="bDel" data-tip="拆（滑鼠左鍵也行）"><b>X</b><i class="em">✖</i></span><span class="kb hb fpb bldOnly" id="bldPut" data-kl="bPut" data-tip="放（滑鼠右鍵也行）"><b>V</b><i class="em">✔</i></span></div>
+    <div id="fpWho"></div>
+    <div id="fpCross"></div>
+    <div id="fpVert" class="fpPad"><span style="grid-area:1/1" class="kb hb fpb" id="fpJump" data-kl="fpJump" data-tip="跳"><b>空白</b><i class="em">⤴</i></span><span style="grid-area:1/1" class="kb hb fpb fpFly" data-fp="up" data-kl="fpJump" data-tip="往上"><b>空白</b><i class="em">⬆</i></span><span style="grid-area:2/1" class="kb hb fpb fpFly" data-fp="dn" data-kl="fpDown" data-tip="往下"><b>C</b><i class="em">⬇</i></span></div>
+  </div>
+  <div id="tip" class="hud"></div>
+  <div id="slowB" class="hud"></div>
+  <div id="obsB" class="hud"></div>
+  <div id="frz" class="hud panel"><span class="fzG"><span class="fz">⏸ 停格中</span><span class="chip" id="frzGo">▶ 繼續（P）</span></span><span class="fzG"><span class="fzL">進水</span><span class="chip" id="frzFlood">📊 圖表（I）</span><span class="chip" id="frzX">🔍 透視（X）</span></span><span class="fzG"><span class="fzL">船</span><span class="chip" id="frzCut">✂ 剖面（Z）</span><span class="chip" id="frzDeck">☰ 甲板（L）</span></span></div>
+  <div id="floodp" class="hud panel">
+    <div class="hT">進水圖表（停格中）<span class="hX" id="floodX">✕ 關閉</span></div>
+    <div class="note" style="color:var(--dim)">灰 ＝ 艙內空間、藍 ＝ 水（越滿越深）、紅點 ＝ 水下的破口、橙點 ＝ 水上的、青線 ＝ 外面的水面、虛線 ＝ 設計水線。要在 3D 裡隔著船殼看艙內的水與破口：上方「🔍 透視」（X；船附近的海面也會拿掉），跟這個圖表分開開關；可以照樣拖鏡頭。</div>
+    <div id="floodBody"></div>
+  </div>
+  <div id="helpBg"></div>
+  <div id="help" class="hud panel">
+    <div class="hT">說明（遊戲暫停中）<span class="hX" id="helpX">✕ 關閉</span></div>
+    <div class="note" style="color:var(--dim)">金框的鍵點下去就等於按那個鍵（手機也能玩）。點說明外面任何地方、✕、<span class="kn" data-kl="help"></span> 或 Esc 關掉</div>
+    <div class="hH">下方大圓鈕（點一下 ＝ 按那個鍵；鍵可以在主選單的「鍵位設定…」改）</div>
+    <div>左邊由外往內：<kbd data-act="ruddL" data-hold="1" data-ico="⬅️"></kbd> 左舵（按住；自動中一碰就換手動）<kbd data-act="sailDn" data-ico="⛵⬇"></kbd> 收帆 <kbd data-act="sailUp" data-ico="⛵⬆"></kbd> 加帆 <kbd data-act="sailMode" data-ico="🤖☸"></kbd> 自動操舵（亮 ＝ 自動、暗 ＝ 手動，點一下切換；錨在水裡 ⇒ 先起錨）<kbd data-act="ancP" data-ico="◀⚓"></kbd> 左錨</div>
+    <div>中間一排：<kbd data-act="cam" data-ico="🎥"></kbd> 換鏡頭 <kbd data-act="pause" data-ico="⏸"></kbd> 停格 <kbd data-act="settings" data-ico="⚙"></kbd> 設定（Esc 也可以）<kbd data-act="ancAll" data-ico="⚓⚓"></kbd> 雙錨 <span class="ball"></span><kbd data-act="ammo" data-ico=""></kbd> 彈種（圓鈕點一下換下一種，顯示現在的彈種）</div>
+    <div>右邊由內往外：<kbd data-act="ancS" data-ico="⚓▶"></kbd> 右錨 <kbd data-act="autoFire" data-ico="🤖💥"></kbd> 自動開砲（亮 ＝ 開；觀戰預設開）<kbd data-act="fire1" data-ico="💥"></kbd> 開一門 <kbd data-act="volley" data-ico="💥💥"></kbd> 齊射（裝填好、對得到的砲依序開火）<kbd data-act="ruddR" data-hold="1" data-ico="➡️"></kbd> 右舵　—— 💥 ＝ 艦隊圓鈕上算砲數的那個符號</div>
+    <div class="hH">帆與航行</div>
+    <div><kbd>⛵</kbd> 帆裝 全收／收帆／戰鬥帆／滿帆：點一下切一級，按住 1 秒後每 0.5 秒再切一級；帆收得越多越慢、越穩，收起來的帆打不壞（除非桅斷了）。有額外動力的船（風暴角號）兩頭各多一段：<b>滿帆再加 ＝ 全速前進</b>（額外動力開）、<b>全收再收 ＝ 倒車</b>（倒退時舵反過來）</div>
+    <div><kbd>☸</kbd> 自動操舵：讓敵艦保持在開火那一舷、繞著彼此轉；航速看帆還剩多少與風向（頂風最慢；手動頂風會失速）</div>
+    <div><kbd>⚓</kbd> 錨：⚓⚓（<span class="kn" data-kl="ancAll"></span>）兩邊都沒拋 ⇒ 一起拋、停住，<span class="kn" data-kl="ruddL"></span>／<span class="kn" data-kl="ruddR"></span> 繞錨原地轉；一邊在水裡 ⇒ 拋另一邊；兩邊都在水裡 ⇒ 起錨。◀⚓（<span class="kn" data-kl="ancP"></span>）⚓▶（<span class="kn" data-kl="ancS"></span>）只拋一邊：帶著速度拋 ⇒ 繞錨急轉。後面接 ⬆ ＝ 在水裡（再按起錨）、⏳ 起錨中、✖ 打壞了（不能拋、鍊子斷了）；鐵鍊從錨鏈孔放出、沉到海底</div>
+    <div class="hH">畫面上的資訊</div>
+    <div><kbd>🧭</kbd> 羅盤（下方中間）：跟著鏡頭轉（N ＝ 北），中間是我艦、藍箭頭 ＝ 風從哪吹來、紅點 ＝ 敵艦、金色扇形 ＝ 兩舷的射界（對得到時亮）；外圈兩環：<span style="color:#e8c26a">金 ＝ 船體還剩多少</span>、<span style="color:#4fb3ff">藍 ＝ 進水</span>（七成以上轉紅；滑鼠停著看數字）</div>
+    <div><kbd>🎯</kbd> 羅盤上方：🎯 瞄準模式　🎥 鏡頭　⚠ 射界外（瞄準點對不到）；第二行 ⛵ 航速（節，倒車是 −）＋現在的帆段與帆 %（張著、還在的帆 × 血量）；物理減速放慢時後面多一個 🐢 ×倍率</div>
+    <div><kbd>砲</kbd> 羅盤兩旁是兩舷的砲（船頭、船尾砲在羅盤上下）：● 裝填好 ○ 裝填中（綠、黃的圈）△ 等火藥與彈藥 ○ 開不了（灰的圈）✕ 毀 <span class="g-wet">≈ 砲口泡在水裡（不能裝填、不能開）</span>；<span class="g-full">綠 滿編</span>、<span class="g-short">黃 人數不足（照開、較慢）</span>、<span class="g-none">灰 少於最少人數</span>、<span class="g-dead">紅 毀</span>；底下的紅線 ＝ 那門砲剩下的血量</div>
+    <div><kbd>艦</kbd> 上方兩角的艦隊圓鈕（我方左、敵方右；手機橫拿時橫排）：外圈金 ＝ 船體、內圈藍 ＝ 進水，👤 ＝ 還能動的船員、💥 ＝ 還能用的砲；點一下在中間展開那艘的詳細資訊與砲位圖，再點一下收起</div>
+    <div><kbd>報</kbd> 上方廣播：砲被打飛（同一刻的併成一行）、傷亡（每 5 秒報一次陣亡與受傷人數；是 0 的不報）；船長、軍官、舵手倒下當下就報</div>
+    <div class="hH">操作</div>
+    <div><kbd>左鍵</kbd> 點敵艦：設瞄準點（拖曳 ＝ 轉鏡頭；手機：點一下瞄準、拖曳轉鏡頭）　<kbd>右鍵</kbd> 拖曳：平移　<kbd>滾輪</kbd> 遠近（手機：雙指張合縮放、雙指一起拖平移）</div>
+    <div><kbd data-act="cam" data-ico="🎥"></kbd> 鏡頭：看我艦（開局預設，朝向敵艦）→ 我艦→敵艦 → 自由 → 追砲彈 → 看敵艦　<kbd data-act="camTrack" data-ico=""></kbd> 鏡頭跟船／固定</div>
+    <div><kbd data-act="aim" data-ico="🎯"></kbd> 瞄準模式（⚙ 設定裡也有）：自由（點敵艦）→ 水線 → 砲甲板 → 帆具 → 甲板人員 → 彈藥庫（瞄那個模式的中心點）；自動開砲時交給砲長</div>
+    <div>彈種：<kbd data-act="ammo" data-ico=""></kbd> 換下一種（輪流）—— <span class="ball"></span> 實心彈：鑽得深，打水線讓船進水　💣 爆裂彈：炸開大洞但不深，對砲傷害大　⛓️ 鏈彈：橫掃一片，專打桅杆、繩與帆</div>
+    <div><kbd data-act="pause" data-ico="⏸"></kbd> 停格：停住、照樣轉鏡頭；上方一條可以開 📊 圖表（<span class="kn" data-kl="flood"></span>，進水）、🔍 透視（<span class="kn" data-kl="xray"></span>）、✂ 剖面（<span class="kn" data-kl="cut"></span>：拿掉靠鏡頭那一半看艙內）、☰ 甲板（<span class="kn" data-kl="deck"></span>：由上往下一層一層拿掉）—— 按繼續後 🔍 ✂ ☰ 保持（遊戲中照樣看得到），📊 收起；<span class="kn" data-kl="xray"></span>、<span class="kn" data-kl="cut"></span>、<span class="kn" data-kl="deck"></span> 不停格也能直接按（開著的寫在下方）</div>
+    <div><kbd data-act="settings" data-ico="⚙"></kbd> 設定（暫停）：繼續、重新開始、回主選單、自爆（我艦的彈藥庫由小到大一間一間引爆 —— 相當於重開，先看煙花）、說明、瞄準模式、畫質與物理效果、帆繩物理（<span class="kn" data-kl="phys"></span>）、鏡頭跟船、靜音（<span class="kn" data-kl="mute"></span>）、FPS、全螢幕、殉爆的慢動作與特寫</div>
+    <div><kbd data-act="restart" data-ico=""></kbd> 重新開始（同樣的設定）　<kbd data-act="menu" data-ico=""></kbd> 回選單　<kbd data-act="help" data-ico=""></kbd> 說明（打開時暫停；點外面、✕ 或 Esc 關掉）</div>
+    <div class="hH">船上的人與規則</div>
+    <div><kbd>砲長</kbd> 每艘一個（細節設定選，預設隨機）：照局勢與自己的偏好換瞄準模式、配彈種；敵艦浮高就改瞄水線。換的時候上方廣播</div>
+    <div><kbd>人</kbd> 砲要有人操作：人少裝填慢，少於最少人數就開不了；人不夠時會集中到幾門砲上。兩舷各有砲班、各自開火（砲門 ±26°）</div>
+    <div><kbd>補</kbd> 預備水手在水線下的住艙甲板待命，也會爬梯子到處走；砲班、送藥手、舵手倒下時，最近的水手爬梯子上去補位（交戰那一舷先補）。人數在「細節設定」</div>
+    <div><kbd>藥</kbd> 送藥手（每一對砲一個）從取用點搬一份火藥與彈藥到砲旁的藥箱（每門最多 2 份）；開火後要從藥箱拿一份才開始裝填，送藥手倒了就會等（△）</div>
+    <div><kbd>醫</kbd> 船隻配置頁可以把空艙房設成醫療艙、擺病床：傷員被扛下去治療；走不到（梯子斷了）就不派人</div>
+    <div><kbd>食</kbd> 有廚房的船（光榮號）：廚師在爐灶做飯，預備水手輪流當伙夫去領一鍋，整桌吃過 ⇒ 工作效率 ×1.1（裝填、抽水、修補、救火、治療都快一成），一分半後慢慢退回 ×1；廚師倒下或爐灶被打壞就斷炊。詳細資訊的船員那一行寫 🍲 廚房；第一人稱跟隨船員時看得到那個人的工作效率</div>
+    <div><kbd>水</kbd> 落水求生：被水淹過頭或掉進海裡的人會浮上來、往自己的船游，游到船邊（船夠慢）就爬上來當預備水手；自己的船在沉就往敵艦游，被撈上去就變成敵方船員；撐太久會溺水（「溺水時間」在細節設定）</div>
+    <div><kbd>旗</kbd> 桅頂的陣營旗：藍方藍旗、紅方紅旗（被打會破）。降旗規則在「細節設定」（預設不降旗：打到沉或全員倒下）；降旗的船不再開砲</div>
+    <div><kbd>血</kbd> 砲、帆、船員、火藥桶的血量，各砲種的傷害、彈種倍率與船殼硬度在「細節設定」</div>
+    <div><kbd>浮</kbd> 打掉的格、飛掉的砲讓船變輕、浮起來：浮出水面的洞不進水；削掉夠多水上的部分，艙底的彈藥庫會露出水面。「進水 %」＝ 艙內積水 ÷ 船再往下沉 4.2 m 要吃的水 ⇒ 100% ＝ 開始沉</div>
+    <div><kbd>殉</kbd> 彈藥庫殉爆：慢動作（越大越慢）＋鏡頭切到爆心，幾秒後回來；⚙ 設定裡可以各自關掉</div>
+    <div><kbd>天</kbd> 天氣在主選單：晴／暴風雨（浪大、風強、天暗下雨打雷；船晃得越兇砲越散、舵難使）。風向、風速會慢慢變：羅盤的藍箭頭跟著變；變很多時上方廣播</div>
+    <div><kbd>畫</kbd> 畫質在主選單（低／中／高；「畫質設定…」可以一項一項調），只改畫面、不改戰局；物理效果（帆與繩、碎木、煙與水花）在「物理設定…」</div>
+  </div>
+
+  <div id="gsetBg"></div>
+  <div id="gset" class="hud panel">
+    <div class="gsTop"><div class="gsT">設定<span class="note">遊戲暫停中（Esc、「繼續」或點面板外面回到戰鬥）</span></div><div class="gsR"><span class="chip big" id="gsGo">▶ 繼續</span><span class="chip big" id="restartB"><b>N</b> 重新開始</span><span class="chip big" id="menuB"><b>R</b> 回主選單</span><span class="chip big" id="boomB">💥</span><span class="chip big" id="helpB"><b>H</b> 說明</span><span class="chip big" id="gsRep">🐞 問題回報</span></div></div>
+    <div class="gsR"><span class="gsL">畫質</span><span class="chip" data-gg="low">低</span><span class="chip" data-gg="mid">中</span><span class="chip" data-gg="high">高</span><span class="chip" data-gg="ultra">全開</span><span class="chip" id="gsGfxB" title="畫質設定頁（陰影細項也在這裡）：疊在遊戲上、靠右，改了馬上看得到">⚙ 畫質設定…</span><span class="note" id="gsGfx"></span></div>
+    <div class="gsR"><span class="gsL">物理效果</span><span class="chip" data-gx="full">全開</span><span class="chip" data-gx="high">高</span><span class="chip" data-gx="mid">中</span><span class="chip" data-gx="low">低</span><span class="note" id="gsPhx"></span></div>
+    <div class="gsR"><span class="gsL">瞄準</span><span class="chip" data-act="aim" id="aimk">🎯 換瞄準模式（<span class="kn" data-kl="aim">Q</span>）</span><span class="note">自由 → 水線 → 砲甲板 → 帆具 → 甲板人員 → 彈藥庫（現在的寫在羅盤上面）</span></div>
+    <div class="gsR"><span class="chip" id="physT"><b>B</b> 帆繩物理</span><span class="chip" id="camT"><b>V</b> 鏡頭跟船</span><span class="chip" id="muteT"><b>M</b> 靜音</span><span class="chip" id="fpsT">顯示 FPS</span><span class="chip" id="fullT"><b>F11</b> 全螢幕</span><span class="note" id="gsFull"></span></div>
+    <div class="gsR"><span class="gsL">視角</span><span class="chip" id="fpT">🧍 第一人稱</span><span class="chip on" id="fpLampT" title="第一人稱時自己帶一盞燈（艙裡比較亮）">🏮 提燈</span><span class="chip" id="bldLinesT" title="建造模式：每一間艙房的外框（穿過牆畫）">📐 艙房外框</span><span class="note">在我艦上走（左下搖桿或 WASD、右下搖桿／拖曳／方向鍵轉頭（電腦：點畫面用滑鼠轉頭，Esc 或按住 Alt 放開）、空白鍵跳、E 爬梯子、Shift 跑）；再按一次回到原本的鏡頭（TASK-0649）</span></div>
+    <div class="gsR"><span class="gsL">碰撞</span><span class="chip" data-fpm="0" title="牆擋人、會從甲板的破洞落下去">正常</span><span class="chip" data-fpm="1" title="牆不擋人，腳底照樣貼著甲板、不墜落；走不出船外">🚪 穿牆</span><span class="chip" data-fpm="2" title="沒有重力、什麼都不擋；空白鍵／C（面板的 ⬆ ⬇）上下">🕊 浮空</span><span class="note">第一人稱時的碰撞</span></div>
+    <div class="gsR"><span class="gsL">音量</span><span class="gsV">音效 <input type="range" min="0" max="100" step="1" data-snd="sfx" aria-label="音效音量"></span><span class="gsV">環境 <input type="range" min="0" max="100" step="1" data-snd="amb" aria-label="環境音音量"></span><span class="gsV">音樂 <input type="range" min="0" max="100" step="1" data-snd="bgm" aria-label="背景音樂音量"></span><span class="note">背景音樂放哪首、交戰時要不要小聲在主選單的「聲音設定…」</span></div>
+    <div class="gsR"><span class="gsL">彈藥庫殉爆</span><span class="chip" id="slowT">慢動作</span><span class="chip" id="slowCamT">特寫鏡頭</span></div>
+    <div class="gsR"><span class="gsL">模擬速度</span><input type="range" id="simSpd" min="-1301" max="903" step="1" value="0" aria-label="模擬速度"><b id="simSpdV" style="min-width:3.6em">×1</b><span class="chip" id="simSpd1">1×</span></div>
+    <div class="gsR"><span class="gsL">物理減速</span><span class="chip" id="pslowT">計算量大時放慢</span></div>
+    <div class="gsR"><span class="gsL">測試</span><span class="chip" id="testT" title="記錄整局每個船員的路徑、職位與狀態的變化、身體落在牆裡（83_testlog.js）；結束畫面「📊 報表」匯出">🧪 測試模式（記錄船員）</span><span class="note" id="testN"></span></div>
+    <div class="gsR"><span class="gsL">帆繩</span><span class="chip" id="rigT" title="記錄整局每面帆的血量與狀態、布被撕的洞、斷繩、帆腳放開的繩、垂下來的繩有沒有懸空（85_riglog.js）；結束畫面「📊 報表」匯出">🪢 帆繩記錄</span><span class="note" id="rigN"></span></div>
+    <div class="note">畫質的細項：上面的「畫質設定…」（主選單也有）；物理的細項在主選單的「物理設定…」；血量、傷害、浪、天氣在開戰前設定；物理效果裡的「進水」（公式／粒子）下一場生效</div>
+  </div>
+
+  <div id="cover">
+    <button id="pgX" aria-label="返回主選單">返回</button><div id="askp" role="dialog" aria-modal="true" aria-labelledby="askT"><div class="panel askc"><h2 id="askT"></h2><div id="askM"></div><div class="row"><button id="askN">取消</button><button id="askY">確定</button></div></div></div><!-- 細節、畫質、物理、船隻配置頁：右上角固定的返回（Tim 2026-10-14：不用捲到底才按得到、不跟著捲） -->
+    <div class="card panel">
+      <h1>Blockside</h1><!-- Tim 2026-10-16：「網頁中的遊戲名稱 可以改成Blockside了」（存檔鍵 ame_constitution_broadside、匯出檔名照舊 ⇒ 舊存檔照樣讀得到） -->
+      <div class="row" id="modes"><!-- 玩法鈕由 js/71_input.js modeButtons 照 js/04_modes.js 的 MODE_RULES 生 --></div>
+      <div class="row" id="plays">玩法
+        <button data-p="fun" class="on">娛樂</button><button data-p="real">寫實</button>
+      </div>
+      <div id="shipsel"><div class="row">我方 <span class="fl" id="fleet0"></span></div><div class="row">敵方 <span class="fl" id="fleet1"></span></div><div id="fleetN"></div><div class="row slide"><label for="field">同時在場</label><input type="range" id="field" step="1" aria-label="同時在場最多幾艘（其他的候補）"><span id="fieldV"></span></div></div>
+      <div class="row" id="sails">航行
+        <button data-s="auto">自動</button><button data-s="manual">手動</button><button data-s="off">拋錨</button>
+      </div>
+      <div class="row slide" id="dists"><label for="dist">距離</label><input type="range" id="dist" step="10" aria-label="開局兩邊船頭相距幾公尺"><span id="distV"></span></div>
+      <div class="row" id="wxs">天氣
+        <button data-w="clear">晴</button><button data-w="storm">暴風雨</button><button data-w="maelstrom">大漩渦</button>
+      </div>
+      <div class="row"><button class="go" id="go" disabled>載入中…</button></div><!-- Tim 2026-10-17：開戰鈕往上搬到天氣下面、畫質上面 -->
+      <div class="row" id="gfxs">畫質
+        <button data-g="low">低</button><button data-g="mid">中</button><button data-g="high">高</button><button data-g="ultra">全開</button><button id="gfxB">畫質設定…</button>
+      </div>
+      <div class="row" id="phxs">物理效果
+        <button data-x="full">全開</button><button data-x="high">高</button><button data-x="mid">中</button><button data-x="low">低</button><button id="phxB">物理設定…</button>
+      </div>
+      <div class="row"><button id="shipB">船隻配置…</button><button id="gunB">砲的設定…</button><button id="furnB">道具設定…</button><button id="keysB">鍵位設定…</button><button id="sndB">聲音設定…</button><button id="wqB">天氣設定…</button><button id="detB">細節設定…</button></div>
+      <div class="row"><button id="allR">全部回到預設</button></div>
+      <div class="row"><button id="repB">🐞 問題回報…</button></div><!-- Tim 2026-10-18：「設定頁多一個問題回報按紐 按下後跳出回報視窗(只是沒有錯誤訊息 因為是手動觸發)」；01_gl.js errShow(null) -->
+      <div class="row"><button id="discordB">💬 加入 Discord 社群</button></div><!-- Tim 2026-10-17：「加入一個 Discord按鈕入口」；連結在 71_input.js DISCORD_URL（⛔ 寫成 <a href="https…"> 會被 vxk_inline 的零外部依賴檢查擋下） -->
+      <!-- 說明與細節設定的摘要放在最下面（Tim 2026-10-13：手機上開戰鈕被擠到畫面外、要捲才看得到；10-17 開戰鈕再往上搬到天氣下面） -->
+      <div class="sub">Blockside（方舷）—— 雕刻作品做成的船，1:1（0.1 公尺一格）互轟：船殼一格一格被打碎、桅杆打得斷、破洞進水會沉。<br>
+        素材：雕刻作品（每一艘的作者在「船隻配置…」）</div>
+      <div class="row" id="detV"></div>
+      <div id="load"></div>
+    </div>
+    <!-- 物理設定（從主選單進；TASK-0526）：每一項的檔位在 js/09_phx.js 的 PHX_ITEMS，按鈕由 js/71_input.js 生 -->
+    <div class="card panel" id="phxp" style="display:none">
+      <h2>物理設定</h2>
+      <div class="sub">物理：帆與繩、碎木、煙與水花、船邊水花、進水。改了立刻生效、跟著設定存檔（進水的模式開戰時決定）。<br>網址：?phx=full｜high｜mid｜low，單項 ?p_rig= ?p_debris= ?p_fx= ?p_water= ?p_flood=（第幾檔，從 0 起）</div>
+      <div class="row" id="phxPre">預設 <button data-x="full">全開</button><button data-x="high">高</button><button data-x="mid">中</button><button data-x="low">低</button>　<span id="phxLv" class="note"></span></div>
+      <div id="phxItems"></div>
+      <div class="row note">帆與繩：高 ＝ 布與繩各迭代 4 次、帆 30 Hz、垂下來的繩最多 500 條、帆的布片每艘 150 片；中 3 次、30 Hz、300 條、80 片；低 2 次、15 Hz、150 條、40 片；關 ＝ 帆停在雕刻作品那一刻（B 鍵、下方「物理」按鈕也是開關這一項）。<br>
+        碎木、煙與水花少生幾顆不改戰局；帆與繩關掉時帆桁不追風，打中帆桁的那幾下會不一樣（跟以前關掉物理一樣）。浪的大小會改戰局，在「細節設定」。<br>
+        船邊水花：船頭推開的浪、船尾翻的白沫、浪拍船身、擦撞與落水的水滴，落回海面變成貼著浪的白沫；只給人看（不改戰局）。高 ＝ 水滴最多 8,000、白沫 4,000；中 4,500／2,200；低 2,000／1,000（白沫散得快一點）；關 ＝ 原本的點。<br>
+        進水：公式 ＝ 原本的（水線下破洞數 × √水深）；粒子 ＝ 水從破口噴進來（洞越大、越深流得越多，浮出水面的洞不流）、往低處流、在艙底積起來，<b>進水量、下沉、傾斜都照艙內的水算（會改戰局）</b>，水偏一舷船就往那邊斜。粗／中／細 ＝ 水格 1.0／0.7／0.5 m、粒子最多 300／800／2,000。開戰時決定，戰鬥中改了下一場生效。</div>
+      <div class="row"><button id="phxX">返回</button></div>
+    </div>
+    <!-- 船隻配置（從主選單進；TASK-0570）：一型一份；船員的項目在 js/05_hull.js 的 CREW_ITEMS，滑桿由 js/71_input.js 生；預設值在後台管理頁（config/game.json 每艘船的 cfg、crew） -->
+    <div class="card panel" id="shipp" style="display:none">
+      <h2>船隻配置</h2>
+      <div class="sub">一型船一份：同一型的船（我方、敵方、友艦、候補）都照這一份。下一場開始生效。預設值在後台管理頁設。</div>
+      <div class="row slide"><label for="cfgShip">船型</label><button id="cfgShip" class="fsb" aria-label="編輯哪一型船（點了選船）"></button><!-- 選船彈窗（72_shippick.js；Tim 2026-10-18「船隻配置的選船是否可以套一樣的UI」） --></div>
+      <div id="shipCard"><canvas id="shipCardC"></canvas><div id="shipCardT"></div></div>
+      <div class="row note" id="shipSt"></div>
+      <div class="row note" id="shipAdm">設定後台：這裡改的是設定檔的預設（ships[].rooms），改了就送回後台；記得在後台按「儲存」，重建之後遊戲才吃得到。船員與性能的預設在後台的欄位改。</div>
+      <div class="nadm">
+      <h3>船員</h3>
+      <div id="crewItems"></div>
+      <div class="row note" id="crewSum"></div>
+      </div>
+      <h3>甲板與艙房</h3>
+      <div id="deckItems"></div>
+      <div id="roomItems"></div>
+      <div class="row note" id="roomSum"></div>
+      <div class="nadm">
+      <h3>換裝</h3>
+      <div class="row note">原本雕的砲、槳、舵、燈…是掛點：換成別的型號（同一類、放得下的），序號不變。一組一起換，或按「逐一」一個一個換；換完這一型重新載入，上面的排水量、砲數、船員跟著變。</div>
+      <div id="fitItems"></div>
+      <div class="row note" id="fitSum"></div>
+      </div>
+      <div id="roomEd" style="display:none">
+        <button id="roomEdX2">完成</button><div class="rt" id="roomEdT"></div>
+        <div class="pal" id="roomEdP"></div>
+        <div id="roomEdW"><canvas id="roomEdC"></canvas></div>
+        <div class="rn" id="roomEdL"></div>
+        <div class="rn" id="roomEdV"></div>
+        <div><button id="roomEdA">自動擺滿</button><button id="roomEdPm" style="display:none">擺滿抽水機</button><button id="roomEdZ">清空</button><button id="roomEdX">完成</button></div>
+      </div>
+      <div class="nadm">
+      <h3>性能</h3>
+      <div class="row note">壓艙物的預設 ＝ 那艘剛好浮在設計水線。</div>
+      <div class="row slide"><label for="hard">硬度</label><input type="range" id="hard"><span id="hardV"></span></div>
+      <div class="row slide"><label for="flood">進水速度</label><input type="range" id="flood" step="0.05"><span id="floodV"></span></div>
+      <div class="row slide"><label for="pump">抽水</label><input type="range" id="pump" step="0.5" aria-label="基礎抽水量（噸／分）"><span id="pumpV"></span></div>
+      <div class="row slide"><label for="ballast">壓艙物</label><input type="range" id="ballast" step="25"><span id="ballastV"></span></div>
+      <div class="row note">減重上浮：船的重量 ＝ 格（每格 0.7 kg）＋ 砲（上面的「砲的重量」）＋ 火藥桶 ＋ 壓艙物（不會被打掉的重量：壓艙鐵與石、水、糧、彈丸）；比設計水線的排水（2,156 噸）輕就浮高、重就吃水深。預設剛好在設計水線；壓艙物調輕 ⇒ 一開始就浮得高。打掉的格、飛掉的砲讓船變輕、浮起來（打掉 10 萬格約 0.12 m）；浮出水面的洞不進水，浮得夠高，艙底的彈藥庫會露出水面。</div>
+      <div class="row slide"><label for="gunw">砲的重量</label><input type="range" id="gunw" step="0.25" aria-label="砲的重量倍率"><span id="gunwV"></span></div>
+      <div class="row slide"><label for="speed">航速</label><input type="range" id="speed" step="0.05"><span id="speedV"></span></div>
+      <div class="row slide"><label for="agile">靈活性</label><input type="range" id="agile" step="0.05"><span id="agileV"></span></div>
+      <div class="row slide"><label for="upwind">逆風</label><input type="range" id="upwind" step="0.05" aria-label="逆風性能"><span id="upwindV"></span></div>
+      <div class="row slide"><label for="base">額外動力</label><input type="range" id="base" step="0.5" aria-label="額外動力（節）：不看風向與帆"><span id="baseV"></span></div>
+      <div class="row"><button id="shipR">這一型回到預設</button><button id="shipRA">全部回到預設</button><button id="shipE">匯出…</button><button id="shipI">匯入…</button><input type="file" id="shipF" accept=".json,application/json" style="display:none"></div>
+      <div class="row"><button id="shipX">返回</button></div>
+      </div>
+    </div>
+    <!-- 砲的設定（從主選單進；Tim 2026-10-14）：一種砲一份；項目在 js/68_guncfg.js 的 GUN_ITEMS，滑桿由它生；預設值在後台管理頁的砲種表（config/game.json guns）與 LIM.dmg* -->
+    <div class="card panel" id="gunp" style="display:none">
+      <h2>砲的設定</h2>
+      <div class="sub">一種砲一份：所有船上同一種砲都照這一份。下一場開始生效。預設值在後台管理頁的砲種表。</div>
+      <div class="row slide"><label for="gunSel">砲種</label><select id="gunSel" aria-label="編輯哪一種砲"></select></div>
+      <div class="row note" id="gunInfo"></div>
+      <div id="gunItems"></div>
+      <div class="row note" id="gunSt"></div>
+      <div class="row"><button id="gunR">這一種回到預設</button><button id="gunRA">全部回到預設</button><button id="gunE">匯出…</button><button id="gunI">匯入…</button><input type="file" id="gunF" accept=".json,application/json" style="display:none"></div>
+      <div class="row"><button id="gunX">返回</button></div>
+    </div>
+    <!-- 道具設定（從主選單進；Tim 2026-10-16）：一種道具一份；項目在 js/67_furncfg.js 的 FURN_ITEMS；預設值 ＝ config/game.json furniture（開發後台 ?admin=furn 用同一頁存） -->
+    <div class="card panel" id="furnp" style="display:none">
+      <h2>道具設定</h2>
+      <div id="furnAdm" class="row"><b>出廠預設值（設定後台）</b>：這一頁的值 ＝ 設定檔現在的預設；改好按「存成出廠預設」⇒ 寫進 config/game.json 的 furniture，「重建」之後遊戲才吃得到。<br><button id="furnAdmS" class="on">💾 存成出廠預設</button><button id="furnAdmB">🔨 重建</button><button id="furnAdmX">↩ 回設定後台</button><div id="furnAdmL" style="white-space:pre-wrap;text-align:left;font-size:12px"></div></div>
+      <div class="sub">一種道具一份：所有船上同一種都照這一份（抽水機、病床、手術台、藥箱…）。下一場開始生效。擺在哪裡在船隻配置頁的「擺設…」。</div>
+      <div class="row slide"><label for="furnSel">道具</label><select id="furnSel" aria-label="編輯哪一種道具"></select></div>
+      <div class="row note" id="furnInfo"></div>
+      <div id="furnItems"></div>
+      <div class="row note" id="furnSt"></div>
+      <div class="row"><button id="furnR">這一種回到預設</button><button id="furnRA">全部回到預設</button><button id="furnE">匯出…</button><button id="furnI">匯入…</button><input type="file" id="furnF" accept=".json,application/json" style="display:none"></div>
+      <div class="row"><button id="furnX">返回</button></div>
+    </div>
+    <!-- 鍵位設定（從主選單進；Tim 2026-10-17）：分頁 ＝ 模式（海戰／第一人稱／建造）；動作表在 js/66_keys.js 的 KEY_ACTS；預設值 ＝ config/game.json keys（開發後台 ?admin=keys 用同一頁存） -->
+    <div class="card panel" id="keysp" style="display:none">
+      <h2>鍵位設定</h2>
+      <div id="keysAdm" class="row"><b>出廠預設值（設定後台）</b>：這一頁的鍵 ＝ 設定檔現在的預設；改好按「存成出廠預設」⇒ 寫進 config/game.json 的 keys，「重建」之後遊戲才吃得到。<br><button id="keysAdmS" class="on">💾 存成出廠預設</button><button id="keysAdmB">🔨 重建</button><button id="keysAdmX">↩ 回設定後台</button><pre id="keysAdmL" class="note"></pre></div>
+      <div class="sub">點「改」再按新的鍵（Esc 取消）。同一個模式裡撞到別的動作 ⇒ 兩個對調。Esc、方向鍵、Tab、F1–F12 不能綁。前面的圖示 ＝ 畫面上那顆圓鈕。</div>
+      <div class="row" id="keysTabs"></div>
+      <div class="row note" id="keysInfo"></div>
+      <div id="keysItems"></div>
+      <div class="row note" id="keysSt"></div>
+      <div class="row"><button id="keysR">這一頁回到預設</button><button id="keysRA">全部回到預設</button><button id="keysE">匯出…</button><button id="keysI">匯入…</button><input type="file" id="keysF" accept=".json,application/json" style="display:none"></div>
+      <div class="row"><button id="keysX">返回</button></div>
+    </div>
+    <!-- 聲音設定（TASK-0677，02_music.js）：三條音量線、背景音樂什麼時候放、放哪首；跟遊戲內設定面板的「音量」同一組值 -->
+    <div class="card panel" id="sndp" style="display:none">
+      <h2>聲音設定</h2>
+      <div class="sub">音量分三條：音效（砲、爆炸、碎裂）、環境音（風、浪、雨）、背景音樂（合成音照樂譜奏的船歌）。M 靜音照舊三條一起關。改了馬上生效、存在這台瀏覽器。</div>
+      <div class="row slide"><label for="vSfx">音效</label><input type="range" min="0" max="100" step="1" id="vSfx" data-snd="sfx" aria-label="音效音量"><span data-sndv="sfx"></span></div>
+      <div class="row slide"><label for="vAmb">環境音</label><input type="range" min="0" max="100" step="1" id="vAmb" data-snd="amb" aria-label="環境音音量"><span data-sndv="amb"></span></div>
+      <div class="row slide"><label for="vBgm">背景音樂</label><input type="range" min="0" max="100" step="1" id="vBgm" data-snd="bgm" aria-label="背景音樂音量"><span data-sndv="bgm"></span></div>
+      <div class="row" id="bgmModes">背景音樂 <button data-bm="duck">放（交戰時小聲一點）</button><button data-bm="on">放（一直一樣大）</button><button data-bm="off">關</button></div>
+      <div class="row" id="bgmTunes"></div>
+      <div class="row" id="bgmThemes"></div>
+      <div class="row note" id="bgmNow"></div>
+      <div class="row"><button id="sndR">這一頁回到預設</button></div>
+      <div class="row"><button id="sndX">返回</button></div>
+    </div>
+    <!-- 細節設定（從主選單進）：滑桿的上下限與預設在 js/04_state.js 的 LIM（網址參數共用同一組） -->
+    <div class="card panel" id="detail" style="display:none">
+      <h2>細節設定</h2>
+      <div id="detAdm" class="row"><b>出廠預設值（設定後台）</b>：這一頁的值 ＝ 設定檔現在的預設；改好按「存成出廠預設」⇒ 寫進 config/game.json（只改各滑桿的預設，上下限不動），「重建」之後遊戲才吃得到。勾選、彈種倍率、砲長、降旗條件不是滑桿 ⇒ 不會存（會列出來）。<br><button id="detAdmS" class="on">💾 存成出廠預設</button><button id="detAdmB">🔨 重建</button><button id="detAdmX">↩ 回設定後台</button><div id="detAdmL" style="white-space:pre-wrap;text-align:left;font-size:12px"></div></div>
+      <div class="sub">開戰前調好，下一場開始生效。網址參數吃同一組：?blue=我艦,友艦… ?red=敵艦,…（或 ?ship=我艦,敵艦） ?hard= ?flood= ?ballast= ?gunw= ?speed= ?agile= ?upwind= ?hands=（這八個套到每一型，在「船隻配置」）?gunhp= ?dmg24= ?dmg32l= ?dmg32= ?dmg18= ?dmg4= ?ammo=（九個數字）?sailhp= ?crewhp= ?crewdeath= ?musket= ?sailfix= ?burn= ?box= ?carry= ?wind= ?powderhp= ?blast= ?cap= ?strike= ?play=fun／real ?stall= ?funspeed= ?funagile= ?funstall= ?funpowder= ?sea=</div>
+      <h3>航行</h3>
+      <div class="row slide"><label for="sea">浪</label><input type="range" id="sea" step="0.05" aria-label="浪的大小"><span id="seaV"></span></div>
+      <div class="row note">浪是物理的一部分：船跟著浪起伏、縱搖、橫搖（長浪才搖得動整艘船），砲彈打到浪頭就落水，打低的砲會被浪擋掉；碎片、落水的人、斷開的船跟著浪浮沉。0 ＝ 平靜的海。</div>
+      <div class="row slide"><label for="stall">頂風失速</label><input type="range" id="stall" step="0.05" aria-label="頂風失速"><span id="stallV"></span></div>
+      <div class="row note">只管手動操舵（電腦照舊）：風從船頭兩側 60° 以內吹來 ⇒ 帆被吹回來、船慢下來，太慢舵就不靈、船頭被風推回原本那一舷。帶著速度才搶得過風；往下風轉一圈永遠轉得過去。0 ＝ 不會失速（頂風只是慢）、100% ＝ 寫實。</div>
+      <div class="row slide"><label for="wheelloss">舵輪壞了</label><input type="range" id="wheelloss" step="0.05" aria-label="舵輪（舵柄）被打掉的舵效損失"><span id="wheellossV"></span></div>
+      <div class="row slide"><label for="rudderloss">舵壞了</label><input type="range" id="rudderloss" step="0.05" aria-label="舵被打掉的舵效損失"><span id="rudderlossV"></span></div>
+      <div class="row note">舵效（羅盤上方 ☸）＝ 舵輪那一節 × 舵那一節：舵輪（舵柄）被打掉損失寫實 40%（改用應急的舵柄、滑車）、舵被打掉損失寫實 100%；兩支舵的船壞一支只算一半。娛樂再乘下面的「舵壞了的損失」（預設 ×0.5 ⇒ 舵輪 20%、舵 50%）。只管舵：兩舷的槳、螺旋槳照舵令差動，不經過舵輪。</div>
+      <div class="row slide"><label for="difftq">差動的力矩</label><input type="range" id="difftq" step="0.1" aria-label="兩舷推力差的轉向力矩倍率"><span id="difftqV"></span></div>
+      <div class="row note">兩舷都有動力的船（槳帆船、兩舷螺旋槳）照舵令把一舷減速、停俥時一舷倒划 ⇒ 加在轉向上：全速前進打滿 ＝ 這艘舵（完好、同一個航速）的幾成；停俥原地轉是它的 2/3，一舷槳斷、槳手倒下、划得慢照比例變小。舵沒了照樣靠它轉。</div>
+      <h3>娛樂加成</h3>
+      <div class="row slide"><label for="funspeed">航速</label><input type="range" id="funspeed" step="0.05" aria-label="娛樂加成：航速"><span id="funspeedV"></span></div>
+      <div class="row slide"><label for="funagile">靈活性</label><input type="range" id="funagile" step="0.05" aria-label="娛樂加成：靈活性"><span id="funagileV"></span></div>
+      <div class="row slide"><label for="funstall">頂風失速</label><input type="range" id="funstall" step="0.05" aria-label="娛樂加成：頂風失速"><span id="funstallV"></span></div>
+      <div class="row slide"><label for="funpowder">火藥血量</label><input type="range" id="funpowder" step="0.01" aria-label="娛樂加成：火藥血量"><span id="funpowderV"></span></div>
+      <div class="row slide"><label for="fundiff">差動</label><input type="range" id="fundiff" step="0.05" aria-label="娛樂加成：差動的力矩"><span id="fundiffV"></span></div>
+      <div class="row slide"><label for="funhelmeff">舵效</label><input type="range" id="funhelmeff" step="0.05" aria-label="娛樂加成：舵效"><span id="funhelmeffV"></span></div>
+      <div class="row slide"><label for="funhelmloss">舵壞了的損失</label><input type="range" id="funhelmloss" step="0.05" aria-label="娛樂加成：舵輪、舵壞了的損失乘數"><span id="funhelmlossV"></span></div>
+      <div class="row slide"><label for="funhard">鐵甲硬度</label><input type="range" id="funhard" step="0.05" aria-label="娛樂加成：鐵甲硬度"><span id="funhardV"></span></div>
+      <div class="row note">主選單的玩法選「娛樂」時，在上面的設定之外再乘這幾個（寫實 ＝ 都乘 1）。兩艘都套。</div>
+      <h3>砲</h3>
+      <div class="row slide"><label for="gunhp">血量</label><input type="range" id="gunhp" step="10" aria-label="砲的血量"><span id="gunhpV"></span></div>
+      <div class="row note">長砲、carronade、追擊砲都是模型：被打到扣血，歸零整門飛出去（舵輪 6 成血）。砲列底下的紅線 ＝ 剩下的血量。</div>
+      <div class="row note">每一種砲的每發傷害、重量、初速、裝填、連發在主選單的「砲的設定…」。下面的彈種倍率乘在每發傷害上。</div>
+      <h3>彈種倍率（%）</h3>
+      <table class="ammo"><tr><th></th><th>對砲</th><th>對帆</th><th>對人</th></tr>
+        <tr><th>實心彈</th><td><input type="number" id="am-0-0" min="0" max="400" step="5" aria-label="實心彈對砲"></td><td><input type="number" id="am-0-1" min="0" max="400" step="5" aria-label="實心彈對帆"></td><td><input type="number" id="am-0-2" min="0" max="400" step="5" aria-label="實心彈對人"></td></tr>
+        <tr><th>爆裂彈</th><td><input type="number" id="am-1-0" min="0" max="400" step="5" aria-label="爆裂彈對砲"></td><td><input type="number" id="am-1-1" min="0" max="400" step="5" aria-label="爆裂彈對帆"></td><td><input type="number" id="am-1-2" min="0" max="400" step="5" aria-label="爆裂彈對人"></td></tr>
+        <tr><th>鏈彈</th><td><input type="number" id="am-2-0" min="0" max="400" step="5" aria-label="鏈彈對砲"></td><td><input type="number" id="am-2-1" min="0" max="400" step="5" aria-label="鏈彈對帆"></td><td><input type="number" id="am-2-2" min="0" max="400" step="5" aria-label="鏈彈對人"></td></tr></table>
+      <div class="row note">對砲 ＝ 直接打中（砲、舵輪、火藥桶）；爆裂彈另有爆風：2.2 m 內的模型吃 每發傷害 × 爆裂對砲倍率 × (1 − 0.75 × 距離／2.2 m)。<br>對帆 ＝ 鏈彈纏上、實心與爆裂穿過（會打個小洞）。對人 ＝ 碎木、爆炸、掠過的砲彈（基準 ＝ 1.4 × 每發傷害 × 倍率）。</div>
+      <h3>動力</h3>
+      <div class="row slide"><label for="inertia">加速慣性</label><input type="range" id="inertia" step="0.05" aria-label="加速慣性：實際質量的倍率"><span id="inertiaV"></span></div>
+      <div class="row slide"><label for="turninert">迴轉慣性</label><input type="range" id="turninert" step="0.05" aria-label="迴轉慣性：轉向率追舵的時間倍率"><span id="turninertV"></span></div>
+      <div class="row slide"><label for="sailtq">帆的力矩</label><input type="range" id="sailtq" step="0.05" aria-label="受損不平衡時船自己偏多少"><span id="sailtqV"></span></div>
+      <div class="row note">船照推力走（帆、蒸汽機、魔法各自推；推力 ÷ 實際質量（含艙內進水）⇒ 加速度），最高航速跟以前一樣。加速慣性 ＝ 質量的倍率（2 ⇒ 加減速慢一倍）；迴轉慣性 ＝ 轉向追舵的快慢（1 ＝ 2 秒）；帆的力矩 ＝ 前面的帆被打掉、一邊的螺旋槳沒了時船自己偏多少（0 ＝ 不偏）。網址 ?inertia= ?turninert= ?sailtq=</div>
+      <h3>帆</h3>
+      <div class="row slide"><label for="sailhp">血量</label><input type="range" id="sailhp" step="10" aria-label="帆的血量"><span id="sailhpV"></span></div>
+      <div class="row note">歸零才掉；還沒掉的帆照剩下的血量算推力（物理開著會看到破洞）。收起來的帆打不壞。</div>
+      <div class="row slide"><label for="wind">風壓</label><input type="range" id="wind" step="0.05" aria-label="帆的風壓"><span id="windV"></span></div>
+      <div class="row note">帆與繩的物理開著時，帆被吹鼓的力道與陣風（帆桁也會跟著風轉）；只管畫面，不改航速。</div>
+      <div class="row slide"><label for="windcap">風速上限</label><input type="range" id="windcap" step="1" aria-label="帆上的風速上限"><span id="windcapV"></span></div>
+      <div class="row note">風壓 × 陣風 × 天氣（暴風雨 ×2.2）× 當下風速 乘完之後最多這麼大 ⇒ 暴風雨裡帆不會被吹得太誇張；只管畫面。</div>
+      <h3>船員</h3>
+      <div class="row slide"><label for="crewhp">血量</label><input type="range" id="crewhp" step="10" aria-label="船員的血量"><span id="crewhpV"></span></div>
+      <div class="row slide"><label for="crewdeath">死亡率</label><input type="range" id="crewdeath" step="5" aria-label="船員 HP 歸零時當場陣亡的機率（%）"><span id="crewdeathV"></span></div>
+      <div class="row note">血量掉到一半以下照舊倒下變傷員；歸零那一刻照死亡率判：中了陣亡，沒中變成傷員（剩一口氣，再被打到歸零再判一次）。</div>
+      <div class="row slide"><label for="drown">溺水時間</label><input type="range" id="drown" step="5" aria-label="落水的人撐多久會溺水（秒）"><span id="drownV"></span></div>
+      <div class="row slide"><label for="musket">火槍射程</label><input type="range" id="musket" step="10" aria-label="火槍的最大射程（公尺）：射程內看不到人就不開槍"><span id="musketV"></span></div>
+      <div class="row slide"><label for="sailfix">補帆時間</label><input type="range" id="sailfix" step="5" aria-label="帆匠補一面從滿血打到快掉的帆要幾秒"><span id="sailfixV"></span></div>
+      <div class="row slide"><label for="heal">治療時間</label><input type="range" id="heal" step="5" aria-label="醫療艙治好一個傷員要幾秒（0 ＝ 關）"><span id="healV"></span></div>
+      <div class="row slide"><label for="galley">廚房加成</label><input type="range" id="galley" step="5" aria-label="吃過飯的水手工作效率加幾成（%；0 ＝ 關）"><span id="galleyV"></span></div>
+      <div class="row note">有廚房（爐灶模型標 kind=galley，現在是光榮號）的船：廚師站在爐灶旁做飯，船員每 8 個一桌，餓了就派一個閒著的預備水手當伙夫去領一鍋（排在所有補位之後，缺人時叫回來）⇒ 整桌吃過。吃過的人裝填、送藥手裝藥包、人力抽水、治療、木匠、帆匠、救火、火槍都快這麼多；走路、爬梯不變。開局全員剛吃過。0 ＝ 關（不開廚房、不生廚師，對局跟沒有廚房一樣）。開不開廚房在開戰時決定（開戰中拉到 0 ⇒ 廚房照開、加成變 ×1）。網址 ?galley=</div>
+      <div class="row slide"><label for="navre">尋路更新</label><input type="range" id="navre" step="0.5" aria-label="尋路動態更新：每幾秒看一次甲板與梯子有沒有被打壞（0 ＝ 關）"><span id="navreV"></span></div>
+      <div class="row checks"><label><input type="checkbox" id="gcrew"> 砲被打飛，砲班跟著受傷</label></div>
+      <div class="row note">歸零陣亡；掉到一半以下受傷倒下；一半以上照常作戰（只閃紅）。火槍一發 40～125。
+        砲被打飛：旁邊 1.5 m 內的人照距離受傷；勾了 ⇒ 那門砲的砲班另外算，3.5 m 內照距離遞減（0.7 m 內全吃）。網址 ?gcrew=0 ＝ 不勾。</div>
+      <h3>補給（火藥與彈藥）</h3>
+      <div class="row slide"><label for="box">砲旁藥箱</label><input type="range" id="box" step="1" aria-label="砲旁藥箱放幾份"><span id="boxV"></span></div>
+      <div class="row slide"><label for="carry">一次搬</label><input type="range" id="carry" step="1" aria-label="送藥手一次搬幾份"><span id="carryV"></span></div>
+      <div class="row note">送藥手（每一對砲一個）從取用點搬火藥與彈藥到砲旁的藥箱；開火後要從藥箱拿一份才開始裝填，空了就等（砲列 △）。藥箱與手上的越多，被打中時炸得越大。</div>
+      <h3>火藥（火藥桶與藥包）</h3>
+      <div class="row slide"><label for="powderhp">血量</label><input type="range" id="powderhp" step="10" aria-label="火藥桶的血量"><span id="powderhpV"></span></div>
+      <div class="row slide"><label for="blast">殉爆威力</label><input type="range" id="blast" step="0.05"><span id="blastV"></span></div>
+      <div class="row slide"><label for="blastv">威力浮動</label><input type="range" id="blastv" step="5" aria-label="每次爆炸的威力浮動（%）"><span id="blastvV"></span></div>
+      <div class="row note">彈藥庫在艙底、水線下，砲彈打不到（每桶 100 磅）：憲法號前後兩間（後 22 桶、前 116 桶），餘燼號船中段一間（230 桶），夜隼號艙房底下一間（8 桶）。每層砲甲板在每間彈藥庫上方各有一個取用點（3 桶火藥＋彈藥；正上方沒有甲板就往前後找；只有一間彈藥庫的船每層前後各一個），送藥手從離要送的那門砲最近的取用點搬到砲旁的藥箱。<br>
+        預設 675（寫實）：很難殉爆但有機率；娛樂再乘「娛樂加成」的火藥血量（預設 ×2/3 ⇒ 450：藥包會炸、有時整間殉爆）。675 時：很難殉爆但有機率（藥包偶爾會炸，彈藥庫要火光竄下去三次才會著）；拉滿 1000 ＝ 都不會爆。火藥桶歸零 ⇒ 炸、旁邊的桶扣血（連鎖）；藥包（送藥手手上、砲旁藥箱）血量 ＝ 火藥桶的 30%，被打中就可能炸；爆炸離取用點 3 m 內 ⇒ 火光竄下艙口、彈藥庫的桶扣血（同一間 3 秒只算一次）⇒ 一間炸掉三成就整間殉爆，夠大就把船炸成兩截。</div>
+      <h3>著火（希臘火）</h3>
+      <div class="row slide"><label for="burn">火勢</label><input type="range" id="burn" step="10" aria-label="希臘火點著的火延燒多快（%；0 ＝ 不點火）"><span id="burnV"></span></div>
+      <div class="row note">希臘火潑到木頭 ⇒ 照材質的易燃性著火（橡木 0.5、松木 0.8、柚木 0.3；鐵甲、銅皮、鍋爐不燒），往鄰格延燒（往上快）、燒久了燒穿（水線下會進水；公式進水只燒焦）；帆從潑到的那一點往外燒出洞、邊緣焦黑，燒掉一半多就掉。預備水手照火場大小去潑水（降旗的船沒人救），熄了留焦痕；火場旁的人會燒傷、火藥桶會被烤。網址 ?burn=</div>
+      <h3>艦隊指揮官</h3>
+      <div class="row cmds" id="cmdB" data-side="blue">我方 <button data-c="free">各自為戰</button><button data-c="pair">一對一配對</button><button data-c="focus">集火</button><button data-c="line">戰列</button><button data-c="auto">推演</button></div>
+      <div class="row cmds" id="cmdR" data-side="red">敵方 <button data-c="free">各自為戰</button><button data-c="pair">一對一配對</button><button data-c="focus">集火</button><button data-c="line">戰列</button><button data-c="auto">推演</button></div>
+      <div class="row" id="gauges">搶上風 <button data-side="blue">我方</button><button data-side="red">敵方</button></div>
+      <div class="row note">每一方一個指揮官，每 3 秒看一次局勢、替自己那一方的電腦船下命令（打哪艘、怎麼開）；你自己開的那艘不聽（觀戰時連我艦也聽）。一邊只有一艘時四種都一樣。<br>
+        <b>各自為戰</b>：每艘打最近的敵艦（以前的電腦）。<b>一對一配對</b>（預設）：把敵我配成對，每艘敵艦最多分到「我方艘數 ÷ 敵方艘數」艘 ⇒ 不會三艘圍一艘、另一艘沒人管。
+        <b>集火</b>：全隊打同一艘（又弱又近的），打到它出局才換。<b>戰列</b>：旗艦帶頭，把敵方中心擺在同一舷、不換舷；其他的排成縱隊照前一艘的航跡跟（隔 90 m，前一艘在哪裡轉、後面的就在哪裡轉），全隊用同一舷。<b>推演</b>：每 30 秒把一對一配對、集火、戰列各往前推 90 秒（精簡模型：3 秒一步，只算位置、航向、照風與帆的航速、兩舷的砲與三條血），挑推完我方比敵方多剩最多戰力的那個；各候選的分數記在戰鬥報表。網址 ?cmd=我方,敵方（free｜pair｜focus｜line｜auto）<br>        <b>搶上風</b>（每一方各一顆，亮 ＝ 開）：開局離得遠時先全隊迎風搶到敵方上風（多 150 m）再壓過去；搶到、4 分鐘沒搶到、或敵我已經接近就照策略接戰（只搶一次）。網址 ?gauge=我方,敵方（1｜0）。<br>        對戰時按我方艦隊那一欄最上面的 🚩（或 K）可以下旗號，蓋過我方指揮官：照指揮官、各自交戰、一對一配對、集火我的目標、成戰列跟我、搶上風</div>
+      <h3>候補</h3>
+      <div class="row" id="reinfs">候補補位 <button data-r="prop">比例</button><button data-r="own">誰沉誰補</button><button data-r="alt">輪流</button></div>
+      <div class="row note">編成比主選單的「同時在場」多 ⇒ 多的照編成順序排進候補；場上的船沉了、在沉或降旗 ⇒ 空出一個名額，候補從自己那一方的後面進場（船頭對著敵方）。開局每一方至少 1 艘、其他名額照比例分。<br>
+        <b>比例</b>（預設）：剩餘戰力（場上還在打的＋候補）照比例分名額，補給離應得最遠的那一方 ⇒ 大致誰沉誰補；懸殊時人少的一方也保得住名額。<b>誰沉誰補</b>：每一方守住自己的名額，自己沒候補了那個名額就空著。<b>輪流</b>：空出名額就兩方輪流補（輪到的那方沒候補 ⇒ 給另一方）。<br>
+        勝負：一方場上的都沉了或降旗、而且候補用完 ⇒ 輸。網址 ?field=（同時在場）?reinf=prop｜own｜alt</div>
+      <h3>砲長</h3>
+      <div class="row slide"><label for="cap0">我艦</label><select id="cap0"></select></div>
+      <div class="row slide"><label for="cap1">敵方</label><select id="cap1"></select></div>
+      <div class="row note">砲長決定電腦瞄哪裡（水線／砲甲板／帆具／甲板人員／彈藥庫）、用什麼彈：照局勢與自己的偏好打分，打久了會換；敵艦浮高就改瞄水線。我艦的砲長在自動開砲時接手。</div>
+      <h3>降旗</h3>
+      <div class="row slide"><label for="cas">死傷降旗</label><input type="range" id="cas" step="5"><span id="casV"></span></div>
+      <div class="row checks"><label><input type="checkbox" id="st-guns"> 砲全啞 10 秒</label><label><input type="checkbox" id="st-masts"> 桅全倒且死傷 ≥ 33%</label><label><input type="checkbox" id="st-officers"> 軍官全倒且死傷 ≥ 25%</label></div>
+      <div class="row" id="strikeV"></div>
+      <h3>Debug</h3>
+      <div class="row checks"><label><input type="checkbox" id="dbg"> Debug 模式</label></div>
+      <div class="row note">查問題用：詳細資訊的「⚓ 改操控這艘」敵艦也有（換過去就是那一方）、羅盤下面多一行除錯資訊（格數、四邊形、碎片、物理 ms、FPS）。網址 ?dbg=1 ＝ 勾；?debug=1 也算開。</div>
+      <div class="row"><button id="detR">重設預設值</button><button id="detX" class="on">返回</button></div>
+    </div>
+  </div>
+  <div id="gfxov" style="display:none">
+    <button id="gfxovX" aria-label="返回">返回</button>
+    <!-- 畫質設定（主選單的「畫質設定…」與遊戲中的設定面板都開這一層；TASK-0522、TASK-0774）：每一項的檔位在 js/07_gfx.js 的 GFX_ITEMS，按鈕由 js/71_input.js 生 -->
+    <div class="card panel" id="gfxp">
+      <h2>畫質設定</h2>
+      <div class="sub">只改畫面、不改戰局（同一個種子、同樣的設定，低與高打出來一模一樣）；改了立刻生效，跟著設定存檔。<br>網址：?gfx=low｜mid｜high｜ultra（全開 ＝ 高＋陰影與立體樹的距離 × 1.5），單項 ?g_shadow= ?g_refl= ?g_refr= ?g_sea= ?g_res= ?g_aa= ?g_rain= ?g_drops= ?g_dropspl= ?g_door= ?g_port= ?g_deco= ?g_masks=（第幾檔，從 0 起）；陰影細項 ?csm=1（分段）／?csm=0（單張）、?sh_dist= ?sh_count= ?sh_s1= ?sh_b1= …（值）</div>
+      <div class="row" id="gfxPre">預設 <button data-g="low">低</button><button data-g="mid">中</button><button data-g="high">高</button><button data-g="ultra">全開</button>　<span id="gfxLv" class="note"></span></div>
+      <div id="gfxItems"></div>
+      <div id="shkItems"></div><!-- 陰影細項（js/07_gfx.js SHK_ITEMS；Tim 2026-10-21）：按鈕、滑桿、分段那一條由 js/71_input.js shkUI 生 -->
+      <div class="row checks"><label><input type="checkbox" id="gfxFps"> 顯示 FPS（畫面上方中間）</label></div>
+      <div class="row note">比較吃效能的是陰影（船多畫兩趟）、反射（再畫一趟鏡像）、解析度與反鋸齒（每個像素的成本）；海面細緻度是海的網格多密、漣漪幾道。浪的大小是物理，在「細節設定」。<br>
+        雨只在暴風雨下：「雨」是整個畫面一層的雨絲；「雨滴（3D）」是鏡頭周圍 3D 空間裡的雨絲（跟著風斜、會被船擋住）；「雨滴水花」是它打在海面與甲板上濺的那一下。高 ＝ 只開 3D 的多＋水花；兩種雨可以一起開。<br>
+        「裝飾」是雕刻作品標成裝飾的模型（meta deco=1 的、砲門蓋板），關掉 ⇒ 不畫（船照樣載入、切了立刻生效）；砲門蓋板例外：每艘、每個畫質都畫。「砲門的開關演出」是有砲門蓋板的船（光榮號）交戰時掀蓋推砲、沒事收砲闔蓋、砲口下水就關，沒有蓋板的砲開火往裡退：「只有我艦」（低畫質）只演自己操控的那艘、「每艘」（中以上）每艘都演；沒輪到的船 ⇒ 蓋板開著、砲推出去不動。兩項都只改畫面。<br>
+        <b>植物密度</b>：樹與小植物畫幾成（照位置固定挑，切換不會換一批）；1.1 km 外的樹冠殼照舊是整片。<b>立體樹的距離</b>：這以內的樹是立體的、會投影子也收影子；外面換成不參與陰影的貼圖與樹冠殼（越遠越吃效能，陰影那一趟也多畫那些樹）。<br>
+        <span id="gfxNote"><b>陰影</b>船、地形、樹、城鎮都有，船再多也一樣；怎麼畫（單張或照鏡頭分段）、分幾段、分界與交界在上面的「陰影細項」，低／高只差陰影圖大小與柔邊取樣。多船時（上限 8 艘）只有視野裡離鏡頭最近的幾艘有：<b>船艙遮罩</b> ＝ 幾艘的船艙裡不畫海水 —— 海面是一整片平面、會穿過船身（艙底在水線下），沒有遮罩的船，從艙口、砲門、被打穿的破洞、停格的拿掉甲板／剖面看進去，艙裡會有一層海水像淹了（遠處看不出來；船開始沉之後本來就不擋）。排不進去的船也沒有停格的「透視」。船數不超過那個數時每艘都有。</span></div>
+      <div class="row"><button id="gfxX">返回</button></div>
+    </div>
+  </div>
+  <div id="end"><div class="card panel"><h2 id="endT"></h2><div id="endS"></div>
+    <button id="endC">繼續看</button><button id="endA">再一場</button><button id="endR">回選單</button></div></div>
+  <div id="spk" role="dialog" aria-modal="true" aria-labelledby="spkT"><div class="card panel">
+    <div class="spkH"><h2 id="spkT">選船</h2><button id="spkX" aria-label="關閉選船">✕</button></div>
+    <div id="spkF"></div><div class="spkN" id="spkN"></div><div class="spkG" id="spkG"></div>
+  </div></div>
+  <div id="err" role="alertdialog" aria-labelledby="errH"><div class="card panel">
+    <h2 id="errH">出錯了</h2><pre id="errMsg"></pre>
+    <div id="errRep" hidden><label for="errTxt">發生什麼事、剛剛在做什麼（選填）</label><textarea id="errTxt" rows="4"></textarea>
+      <label id="errShotL" class="chk"><input type="checkbox" id="errShot" checked> 附上畫面截圖</label>
+      <div class="note" id="errNote"></div><!-- 文字照有沒有 Discord webhook 換（01_gl.js errShow） -->
+      <div class="note" id="errHint" hidden></div></div>
+    <div class="btns"><button id="errRepB">回報錯誤</button><button id="errCopy" hidden>複製內容</button><button id="errSend" hidden>寄出</button><button id="errPost" hidden>送出回報</button><button id="errX">關閉</button></div>
+  </div></div>
+</div>
+
+<script src="../VoxelKit/voxelkit.js"></script>
+<!-- 船：admin.py 照 config/game.json 的 ships 改寫這一段（匯入新船、重新匯入；⛔ 手改會被下一次 admin.py build 蓋掉）—— ships 開始 -->
+<script type="application/x-vxk" id="ship" src="../VoxelKit/_cache/constitution.vxk"></script>
+<script type="application/x-vxk" id="ship-ember" src="../VoxelKit/_cache/ember.vxk"></script>
+<script type="application/x-vxk" id="ship-falcon" src="../VoxelKit/_cache/falcon.vxk"></script>
+<script type="application/x-vxk" id="ship-stormkaap" src="../VoxelKit/_cache/stormkaap.vxk"></script>
+<script type="application/x-vxk" id="ship-nightlamp" src="../VoxelKit/_cache/nightlamp.vxk"></script>
+<script type="application/x-vxk" id="ship-tridente" src="../VoxelKit/_cache/tridente.vxk"></script>
+<script type="application/x-vxk" id="ship-phoenix" src="../VoxelKit/_cache/phoenix.vxk"></script>
+<script type="application/x-vxk" id="ship-virginia" src="../VoxelKit/_cache/virginia.vxk"></script>
+<script type="application/x-vxk" id="ship-cosecha" src="../VoxelKit/_cache/cosecha.vxk"></script>
+<script type="application/x-vxk" id="ship-napoleon" src="../VoxelKit/_cache/napoleon.vxk"></script>
+<script type="application/x-vxk" id="ship-monitor" src="../VoxelKit/_cache/monitor.vxk"></script>
+<script type="application/x-vxk" id="ship-sentinel" src="../VoxelKit/_cache/sentinel.vxk"></script>
+<script type="application/x-vxk" id="ship-tidegrave" src="../VoxelKit/_cache/tidegrave.vxk"></script>
+<script type="application/x-vxk" id="ship-gloire" src="../VoxelKit/_cache/gloire.vxk"></script>
+<script type="application/x-vxk" id="ship-reale" src="../VoxelKit/_cache/reale.vxk"></script>
+<script type="application/x-vxk" id="ship-susquehanna" src="../VoxelKit/_cache/susquehanna.vxk"></script>
+<script type="application/x-vxk" id="ship-dromon" src="../VoxelKit/_cache/dromon.vxk"></script>
+<script type="application/x-vxk" id="ship-punt" src="../VoxelKit/_cache/punt.vxk"></script>
+<script type="application/x-vxk" id="ship-fusta" src="../VoxelKit/_cache/fusta.vxk"></script>
+<script type="application/x-vxk" id="ship-dingyuan" src="../VoxelKit/_cache/dingyuan.vxk"></script>
+<script type="application/x-vxk" id="ship-matsushima" src="../VoxelKit/_cache/matsushima.vxk"></script>
+<!-- ships 結束 -->
+<!-- 設定檔（TASK-0542）：各項設定的初始值與船隻清單；js/00_config.js 讀成 CFG。設定後台：python -I admin.py serve -->
+<script type="application/x-asset" id="game-config" src="config/game.json"></script>
+<script type="application/x-asset" id="meta-kinds" src="config/meta_kinds.json"></script>
+<script type="application/x-asset" id="ship-cards" src="config/ship_cards.json" data-optional="1"></script><!-- 選船彈窗的卡片（admin.py shipcheck 產生；沒有 ⇒ 卡片只寫名字，js/72_shippick.js） -->
+<!-- 美術素材（選用）：沒交 ⇒ 遊戲用程式畫的替代品；規格見 README.md 與 TASK 的素材清單 -->
+<script type="application/x-asset" id="art-crew" src="art/crew.png" data-optional="1"></script>
+<script type="application/x-asset" id="art-fx" src="art/fx.png" data-optional="1"></script>
+<script type="application/x-asset" id="art-hud" src="art/hud.png" data-optional="1"></script>
+<!-- 遊戲本體：照功能分檔、檔名數字就是順序；vxk_inline.py 把 data-bundle="game" 的接成同一個閉包（見 js/00_core.js 檔頭） -->
+<script src="js/00_config.js" data-bundle="game"></script>
+<script src="js/00_core.js" data-bundle="game"></script>
+<script src="js/00_events.js" data-bundle="game"></script>
+<script src="js/01_gl.js" data-bundle="game"></script>
+<script src="js/02_audio.js" data-bundle="game"></script>
+<script src="js/02_ambient.js" data-bundle="game"></script>
+<script src="js/02_music.js" data-bundle="game"></script>
+<script src="js/03_camera.js" data-bundle="game"></script>
+<script src="js/04_state.js" data-bundle="game"></script>
+<script src="js/04_modes.js" data-bundle="game"></script>
+<script src="js/05_hull.js" data-bundle="game"></script>
+<script src="js/05_material.js" data-bundle="game"></script>
+<script src="js/06_cache.js" data-bundle="game"></script>
+<script src="js/07_gfx.js" data-bundle="game"></script>
+<script src="js/08_sea.js" data-bundle="game"></script>
+<script src="js/08_weather.js" data-bundle="game"></script>
+<script src="js/08_seabed.js" data-bundle="game"></script>
+<script src="js/09_phx.js" data-bundle="game"></script>
+<script src="js/10_ship.js" data-bundle="game"></script>
+<script src="js/11_rig_gpu.js" data-bundle="game"></script>
+<script src="js/12_effects.js" data-bundle="game"></script>
+<script src="js/13_water.js" data-bundle="game"></script>
+<script src="js/14_rain.js" data-bundle="game"></script>
+<script src="js/15_smooth.js" data-bundle="game"></script>
+<script src="js/16_treegen.js" data-bundle="game"></script>
+<script src="js/20_shatter.js" data-bundle="game"></script>
+<script src="js/21_gunnery.js" data-bundle="game"></script>
+<script src="js/22_pieces.js" data-bundle="game"></script>
+<script src="js/23_powder.js" data-bundle="game"></script>
+<script src="js/24_armor.js" data-bundle="game"></script>
+<script src="js/25_doors.js" data-bundle="game"></script>
+<script src="js/26_spin.js" data-bundle="game"></script>
+<script src="js/26_gunanim.js" data-bundle="game"></script>
+<script src="js/27_turret.js" data-bundle="game"></script>
+<script src="js/28_fire.js" data-bundle="game"></script>
+<script src="js/29_sailrecipe.js" data-bundle="game"></script>
+<script src="js/30_rig_physics.js" data-bundle="game"></script>
+<script src="js/31_sailing.js" data-bundle="game"></script>
+<script src="js/31_drive.js" data-bundle="game"></script>
+<script src="js/32_hull.js" data-bundle="game"></script>
+<script src="js/32_ground.js" data-bundle="game"></script>
+<script src="js/33_flood.js" data-bundle="game"></script>
+<script src="js/33_wrooms.js" data-bundle="game"></script>
+<script src="js/33_wrwater.js" data-bundle="game"></script>
+<script src="js/33_wrsim.js" data-bundle="game"></script>
+<script src="js/34_shreds.js" data-bundle="game"></script>
+<script src="js/35_decks.js" data-bundle="game"></script>
+<script src="js/36_rooms.js" data-bundle="game"></script>
+<script src="js/37_furnmodels.js" data-bundle="game"></script>
+<script src="js/38_fit.js" data-bundle="game"></script>
+<script src="js/39_eff.js" data-bundle="game"></script>
+<script src="js/39_duty.js" data-bundle="game"></script>
+<script src="js/40_crew.js" data-bundle="game"></script>
+<script src="js/41_crew_art.js" data-bundle="game"></script>
+<script src="js/42_hands.js" data-bundle="game"></script>
+<script src="js/43_swim.js" data-bundle="game"></script>
+<script src="js/44_medic.js" data-bundle="game"></script>
+<script src="js/45_pumps.js" data-bundle="game"></script>
+<script src="js/45_galley.js" data-bundle="game"></script>
+<script src="js/46_carpenter.js" data-bundle="game"></script>
+<script src="js/47_sailmaker.js" data-bundle="game"></script>
+<script src="js/48_damage.js" data-bundle="game"></script>
+<script src="js/49_burn.js" data-bundle="game"></script>
+<script src="js/50_sim.js" data-bundle="game"></script>
+<script src="js/51_captain.js" data-bundle="game"></script>
+<script src="js/52_fleet.js" data-bundle="game"></script>
+<script src="js/53_commander.js" data-bundle="game"></script>
+<script src="js/54_helm.js" data-bundle="game"></script>
+<script src="js/55_tune.js" data-bundle="game"></script>
+<script src="js/56_rollout.js" data-bundle="game"></script>
+<script src="js/57_core.js" data-bundle="game"></script>
+<script src="js/59_burnfx.js" data-bundle="game"></script>
+<script src="js/60_render.js" data-bundle="game"></script>
+<script src="js/60_rbatch.js" data-bundle="game"></script>
+<script src="js/61_hud.js" data-bundle="game"></script>
+<script src="js/62_simview.js" data-bundle="game"></script>
+<script src="js/62_lathe.js" data-bundle="game"></script>
+<script src="js/62_pole.js" data-bundle="game"></script>
+<script src="js/62_shell.js" data-bundle="game"></script>
+<script src="js/62_wheel.js" data-bundle="game"></script>
+<script src="js/62_ports.js" data-bundle="game"></script>
+<script src="js/63_flood_gl.js" data-bundle="game"></script>
+<script src="js/63_wrwater_gl.js" data-bundle="game"></script>
+<script src="js/63_bed_gl.js" data-bundle="game"></script>
+<script src="js/63_trees.js" data-bundle="game"></script>
+<script src="js/63_towns.js" data-bundle="game"></script>
+<script src="js/63_chart.js" data-bundle="game"></script>
+<script src="js/64_cfgkit.js" data-bundle="game"></script>
+<script src="js/65_ask.js" data-bundle="game"></script>
+<script src="js/66_keys.js" data-bundle="game"></script>
+<script src="js/67_furncfg.js" data-bundle="game"></script>
+<script src="js/68_guncfg.js" data-bundle="game"></script>
+<script src="js/69_prefs.js" data-bundle="game"></script>
+<script src="js/70_flow.js" data-bundle="game"></script>
+<script src="js/71_ctrl.js" data-bundle="game"></script>
+<script src="js/71_input.js" data-bundle="game"></script>
+<script src="js/72_floodui.js" data-bundle="game"></script>
+<script src="js/72_shippick.js" data-bundle="game"></script>
+<script src="js/72_fitui.js" data-bundle="game"></script>
+<script src="js/73_slowmo.js" data-bundle="game"></script>
+<script src="js/74_cutaway.js" data-bundle="game"></script>
+<script src="js/75_shipcheck.js" data-bundle="game"></script>
+<script src="js/76_anchor.js" data-bundle="game"></script>
+<script src="js/77_colours.js" data-bundle="game"></script>
+<script src="js/78_funnel.js" data-bundle="game"></script>
+<script src="js/79_report.js" data-bundle="game"></script>
+<script src="js/80_lab.js" data-bundle="game"></script>
+<script src="js/81_floodlab.js" data-bundle="game"></script>
+<script src="js/81_fps.js" data-bundle="game"></script>
+<script src="js/82_build.js" data-bundle="game"></script>
+<script src="js/86_inspect.js" data-bundle="game"></script>
+<script src="js/83_testlog.js" data-bundle="game"></script>
+<script src="js/85_riglog.js" data-bundle="game"></script>
+<script src="js/84_fleetlab.js" data-bundle="game"></script>
+<script src="js/90_main.js" data-bundle="game"></script>
+</body>
+</html>

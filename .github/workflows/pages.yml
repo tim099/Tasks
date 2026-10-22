@@ -1,0 +1,35 @@
+# 區塊職責：把 index.html（《憲法號對轟》成品）原樣部署到 GitHub Pages（Settings → Pages → Source：GitHub Actions）。
+# 物理意義：不建置 —— 成品 index.html 在本機建好（python -I src/admin.py build，要船的 .vxk、那些不入版控）才提交；這裡只上傳 repo 根目錄。
+# 設計取捨：跟 GitHub 的「Static HTML」範本同一套；只放成品 ⇒ 上傳幾 MB（ArtGallery 那條整個畫廊 2.45 GB、超過 1 GB 上限，會隨機逾時 —— 這個 repo 存在的理由）。
+name: deploy-pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:          # 手動重跑
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false   # 取消到一半的部署會讓線上停在半舊狀態
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 成品跟來源對得上、船檔（ships/）都在（TASK-0674；對不上 ⇒ 不部署）
+        run: python3 -I src/admin.py srccheck
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+      - id: deployment
+        uses: actions/deploy-pages@v4
