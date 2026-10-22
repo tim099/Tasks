@@ -1,6 +1,23 @@
-# 船的 .vxk：從雕刻作品匯出（python -I src/admin.py cache／import／reimport），不入版控；指紋在 src/config/vxk_lock.json
-VoxelKit/_cache/
-__pycache__/
-*.pyc
-# 匯入檢查的報告（python -I src/admin.py shipcheck；本機產物）
-reports/
+### Windows
+# Windows thumbnail cache files
+Thumbs.db
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin used on file shares
+$RECYCLE.BIN/
+
+# Windows shortcuts
+*.lnk
+### UCL_Task
+# tasks/*.md 與 _index.txt 是**事實來源**，要入版控；
+# 這個是 Cmd 的回傳檔（每次操作整份覆寫），不是事實來源。
+# 🩸 2026-08-24 獨立成 repo 時這條 ignore 沒跟著搬過來 ——
+#   規則住在舊 repo 的 .gitignore 裡，而搬家只搬了資料。
+#   「產生端與收取端是兩張表」：新增一個放資料的地方，就要同時搬「誰不收」那張。
+_last_task_report.md
+
+# 寫入端的跨 process 檔案鎖（TASK-0349，`SCP_FileLock` 鎖 `_index.txt` 旁邊這一顆）——
+# 它是**開著的握把**，內容永遠是空的；不是事實來源，也不該被 commit（別的機器 pull 下來不代表誰在寫）。
+_index.txt.lock
