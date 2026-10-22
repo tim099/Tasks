@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockside・指揮官沙盒（2D）</title>
+<!-- TASK-0551：艦隊指揮官的 2D 策略沙盒。開發用（Blockside 根目錄的 sandbox.html）。
+     指揮官 js/53_commander.js 跟遊戲是同一份；模擬 js/sb_sim.js（照抄遊戲的航行公式、數字從遊戲量）；畫面與批次 js/sb_ui.js。
+     建置：python -I ../VoxelKit/vxk_inline.py sandbox.html ../sandbox.html -->
+<style>
+  :root{ --ink:#e8eef5; --dim:#9fb0c2; }
+  html,body{ margin:0; background:#0e1a26; color:var(--ink); font:14px/1.5 system-ui, "Microsoft JhengHei", sans-serif; }
+  #top{ padding:8px 12px; display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; border-bottom:1px solid rgba(255,255,255,.1); }
+  #top label{ color:var(--dim); } select, input{ font:inherit; background:#1a2a3a; color:var(--ink); border:1px solid rgba(255,255,255,.2); border-radius:5px; padding:2px 5px; }
+  input[type=number]{ width:56px; }
+  button{ font:inherit; background:rgba(255,255,255,.08); color:var(--ink); border:1px solid rgba(255,255,255,.25); border-radius:5px; padding:3px 10px; cursor:pointer; }
+  button.on{ background:#e0b453; color:#111; }
+  #main{ display:flex; gap:10px; padding:8px 12px; flex-wrap:wrap; }
+  #cv{ flex:1 1 560px; height:62vh; min-height:340px; border-radius:6px; }
+  #side{ flex:0 1 380px; font-size:12px; max-height:62vh; overflow:auto; }
+  .sr{ padding:2px 4px; border-left:3px solid; margin:2px 0; } .sr.blue{ border-color:#5aa2ff; } .sr.red{ border-color:#ff6b5a; } .sr.out{ opacity:.5; }
+  #batch{ padding:6px 12px 20px; } #btab{ border-collapse:collapse; margin-top:6px; } #btab th, #btab td{ border:1px solid rgba(255,255,255,.15); padding:4px 8px; text-align:center; } #btab small{ color:var(--dim); }
+  .note{ color:var(--dim); font-size:12px; max-width:980px; }
+  @media (max-width:520px){ #cv{ height:48vh; } #top{ gap:4px 8px; } }
+</style>
+</head>
+<body>
+<div id="top">
+  <b>指揮官沙盒（2D）</b>
+  <span><label>藍</label> <input type="number" id="blueN" min="1" max="8" value="4"> <select id="blueH"></select> <select id="blueC"></select></span>
+  <span><label>紅</label> <input type="number" id="redN" min="1" max="8" value="4"> <select id="redH"></select> <select id="redC"></select></span>
+  <span><label>距離</label> <input type="number" id="dist" min="50" max="1000" step="10" value="140"> m</span>
+  <span><label>風</label> <select id="wind"><option value="rnd">照種子</option><option value="0">往 +x</option><option value="90">往 +z</option><option value="180">往 −x</option><option value="270">往 −z</option></select></span>
+  <span><label>玩法</label> <select id="play"><option value="fun">娛樂</option><option value="real">寫實</option></select></span>
+  <span><label>種子</label> <input type="number" id="seed" value="1"></span>
+  <button id="go">開始</button> <button id="pause">暫停</button>
+  <span id="spd"><button data-s="1">1×</button><button data-s="4" class="on">4×</button><button data-s="16">16×</button><button data-s="64">64×</button></span>
+  <span id="stat"></span>
+</div>
+<div id="main"><canvas id="cv"></canvas><div id="side"><div id="ships"></div></div></div>
+<div id="batch">
+  <button id="bgo">批次對打</button> <label>每格</label> <input type="number" id="bn" value="40" min="2" step="2"> 場　<label>每場最多</label> <input type="number" id="bt" value="900" step="60"> 秒　<span id="bprog" class="note"></span>
+  <table id="btab"></table>
+  <p class="note">批次：兩方的編成照上面那一列，策略兩兩對打；每一格的場一半換邊（藍紅、編成一起對調）⇒ 格子裡是「列的策略打欄的策略」的勝率（到時限還沒分出來 ⇒ 判定：比兩方剩下的戰力；差太少才算和局，和局算半場）、平均打多久、平均多剩幾艘。
+    沙盒只模擬指揮官要的東西（位置、航向、照風的航速、兩舷的砲、船殼／砲／人三條血、每根桅的帆：中彈會隨機打掉帆、打倒桅，帆少了就慢），數字從遊戲量；風向、風速照種子（跟遊戲一樣隨機）；名次要拿完整的遊戲對照過才算數（TASK-0551）。</p>
+</div>
+<script>
+(function () {
+'use strict';
+// ── js/53_commander.js ──
+// ───────────────────────── 艦隊指揮官（TASK-0551） ─────────────────────────
+// Tim 2026-10-14：「加一個艦隊指揮官 AI 用來制定全局策略」「我方友艦也聽我方指揮官」。
+// ⛔ 這一檔是純邏輯：只讀「局勢」、只回「命令」，不碰遊戲的全域變數 ⇒ 遊戲（52_fleet.js cmdTick）與 2D 沙盒（sandbox）載入同一份。
+//
+// 局勢 view：{ t（秒）, wind: [x, z]（風吹去的方向，單位向量）, side（'blue'／'red'：替哪一方想）, ships: [s…] }
+//   s：{ id, team, x, z, yaw（船頭 ＝ [cos, −sin]）, spd（m/s）, hp（船殼 0..1）, guns（砲 0..1）, crew（人 0..1）, mass（開戰排水量）, len（水線長 m）,
+//        out（沉了、在沉、降旗）, cmd（指揮得動：玩家自己開的那艘 ⇒ false）, tgt（現在打的那艘 id；玩家那艘照它自己的）}
+//   view 選填（TASK-0679；沒給 ⇒ 跟以前一樣，沙盒就沒給）：R（交戰距離 m）、gauge（這一方要不要搶上風）、signal（玩家的旗號：{ strat, lead, focus, gauge }，蓋過設定的策略）；
+//   s.lerr、s.llag、s.larc、s.loff（戰列跟隨：離站位多遠、沿航跡落後多少、沿排頭航跡離排頭多遠、離航跡多遠 m，遊戲上一步量的）。
+//   s.asp（選填）：這艘的武器主要朝哪裡 —— 'B' 船頭／'A' 船尾（比正橫兩舷火力大）／'side'；沒給 ＝ 'side'（54_helm.js helmAspect）。
+// 命令 orders：{ [id]: { target（打哪艘 id；null ⇒ 照船自己挑）, mode, leader（戰列：跟著誰；站位每一步照它現在的位置算）, throttle（油門；沒寫 ＝ 1）,
+//   side（排頭：交戰的那一舷 'P'／'S'）, pace（排頭：巡航的幾成）, tack（搶上風：往風軸哪一側搶，±1）} }
+//   mode：'engage' 交戰 ／ 'line' 戰列跟隨（遊戲：cmdHelmWake 跟前一艘的航跡；沙盒：cmdHelmLine）／ 'lead' 戰列的排頭（遊戲 54_helm.js helmLead；沙盒當交戰）／ 'gauge' 搶上風（helmGauge）
+// 記憶 mem：每一方一份（配對、集火的目標、戰列的順序、搶上風的進度），下一次想的時候接著用 ⇒ 不會每想一次就整個換一套；換策略、換旗號 ⇒ 除了搶上風都重來。
+var CMD_STRATS = ['free', 'pair', 'focus', 'line', 'auto'];
+var CMD_NAMES = { free: '各自為戰', pair: '一對一配對', focus: '集火', line: '戰列', auto: '推演' };   // 推演（TASK-0688）：每 30 秒把配對／集火／戰列各往前推 90 秒、挑最好的（56_rollout.js rollStrat）
+var CMD_LINE_GAP = 70;                                                   // 戰列：前後兩艘的中心隔多遠（m；憲法號水線長 55 m ⇒ 頭尾隔 15 m）；自動調參調出來的（TASK-0687，2026-10-18，撞在下限 70；調之前 90）
+// 搶上風（TASK-0679）：我方中心比敵方中心多上風 CMD_GAUGE_UP ⇒ 搶到；CMD_GAUGE_MAX 秒沒搶到、或敵我最近的兩艘近於 CMD_GAUGE_NEAR × 交戰距離 ⇒ 不搶了、接戰。
+//   往風軸哪一側搶：敵方中心在哪一側就往哪一側（離風軸 CMD_GAUGE_SIDE 以內不換邊 ⇒ 不會一直換舷搶風）。
+var CMD_GAUGE_UP = 150, CMD_GAUGE_MAX = 240, CMD_GAUGE_NEAR = 1.5, CMD_GAUGE_SIDE = 120;
+// 戰列的排頭（TASK-0679）：期望航速 ＝ 巡航 × pace（隊形還沒排好 ⇒ CMD_PACE_FORM 等後面的跟上）；跟隨（cmdHelmWake）：沿航跡往前 CMD_WAKE_LA 那一點開、落後 1 m ⇒ 快 CMD_WAKE_K m/s
+var CMD_PACE = 0.9, CMD_PACE_FORM = 0.7, CMD_WAKE_LA = 40, CMD_WAKE_K = 0.04, CMD_WAKE_VMIN = 0.8, CMD_WAKE_FAR = 80, CMD_WAKE_AWAY = 0.5;   // AWAY：在排頭旁邊或前面時往遠離排頭那邊偏多少（跟排頭航向合成；0.5 ≈ 27°）
+
+function cmdDist(a, b) { return Math.hypot(a.x - b.x, a.z - b.z); }
+function cmdStrength(s) { return 0.5 * s.hp + 0.3 * s.guns + 0.2 * s.crew; }   // 還剩多少戰力（0..1）
+/** 可調參數（TASK-0687）：這一方的覆寫（cmdView 帶進來的 view.tune，存在 mem.tn）有這一鍵 ⇒ 用它，沒有 ⇒ d（原本的常數）。2D 沙盒沒有覆寫 ⇒ 一律 d。 */
+function cmdTune(mem, k, d) { var t = mem.tn; return t && t[k] !== undefined ? t[k] : d; }
+function cmdCenter(L) { var x = 0, z = 0; L.forEach(function (s) { x += s.x; z += s.z; }); return L.length ? { x: x / L.length, z: z / L.length } : null; }
+
+/** 替 view.side 那一方想一次。strat：CMD_STRATS 其中一個；free ⇒ 不下命令（船照自己的：最近的敵艦）。
+ *  玩家的旗號（view.signal）蓋過 strat：成戰列跟我 ⇒ 排頭 ＝ 玩家那艘；集火我的目標 ⇒ 集火那艘。搶上風（view.gauge 或旗號的 gauge）疊在任何策略上（cmdGauge）。 */
+function cmdThink(view, strat, mem) {
+  var own = view.ships.filter(function (s) { return s.team === view.side && !s.out; });
+  var foes = view.ships.filter(function (s) { return s.team !== view.side && !s.out; });
+  var orders = {}, sig = view.signal || null;
+  if (sig && CMD_NAMES[sig.strat]) strat = sig.strat;
+  if (!CMD_NAMES[strat]) strat = 'free';
+  if (strat === 'auto') strat = typeof rollStrat === 'function' ? rollStrat(view, mem) : 'pair';   // 推演 ⇒ 這一次照挑中的那個想（56_rollout.js；玩家的旗號照樣蓋過它）
+  var key = sig ? 'sig:' + strat + ':' + sig.lead + ':' + sig.focus : 'cfg:' + strat;
+  if (mem.key !== key) { var g = mem.gauge, rl = mem.roll; Object.keys(mem).forEach(function (k) { delete mem[k]; }); mem.key = key; if (g) mem.gauge = g; if (rl) mem.roll = rl; }   // 換策略、換旗號 ⇒ 配對、集火、戰列重來（搶上風、推演的進度留著）
+  mem.tn = view.tune || null;                                            // 這一方的可調參數覆寫（55_tune.js；平常 null）
+  if (!own.length || !foes.length) return orders;
+  if (strat === 'pair') cmdPair(own, foes, mem, orders);
+  else if (strat === 'focus') cmdFocus(own, foes, mem, orders, sig ? sig.focus : null);
+  else if (strat === 'line') cmdLine(own, foes, mem, orders, view, sig ? sig.lead : null);
+  if (sig && sig.gauge !== undefined && sig.gauge !== null ? sig.gauge : view.gauge) cmdGauge(view, own, foes, mem, orders, strat);
+  own.forEach(function (s) { if (!s.cmd) delete orders[s.id]; });          // 玩家自己開的那艘不下命令（但算在配對、戰列裡）
+  return orders;
+}
+
+/** 一對一配對：每艘敵艦最多分到 ⌈我方艘數 ÷ 敵方艘數⌉ 艘（⇒ 不會三艘圍一艘、另一艘沒人管）。
+ *  原本的配對還有效（目標沒出局、沒超過上限）就留著；其他的照「距離 ＋ 那艘已經有幾艘在打 × 300 m」最小的貪心補上（先補離敵人近的）。
+ *  玩家那艘（cmd false）照它自己正在打的算進去。 */
+function cmdPair(own, foes, mem, orders) {
+  var cap = Math.ceil(own.length / foes.length), load = {}, asg = mem.pair || {}, ids = foes.map(function (f) { return f.id; });
+  foes.forEach(function (f) { load[f.id] = 0; });
+  var free = [];
+  own.forEach(function (s) {
+    var t = !s.cmd && s.tgt !== undefined && s.tgt !== null ? s.tgt : asg[s.id];
+    if (t !== undefined && ids.indexOf(t) >= 0 && load[t] < cap) { load[t]++; asg[s.id] = t; } else free.push(s);
+  });
+  free.sort(function (a, b) { return Math.min.apply(null, foes.map(function (f) { return cmdDist(a, f); })) - Math.min.apply(null, foes.map(function (f) { return cmdDist(b, f); })) || a.id - b.id; });
+  free.forEach(function (s) {
+    var best = null, bc = 1e18;
+    foes.forEach(function (f) { if (load[f.id] >= cap) return; var c = cmdDist(s, f) + 300 * load[f.id]; if (c < bc - 1e-9) { bc = c; best = f; } });
+    if (!best) foes.forEach(function (f) { var c = cmdDist(s, f) + 300 * load[f.id]; if (c < bc - 1e-9) { bc = c; best = f; } });
+    asg[s.id] = best.id; load[best.id]++;
+  });
+  mem.pair = asg;
+  own.forEach(function (s) { orders[s.id] = { target: asg[s.id], mode: 'engage' }; });
+}
+
+/** 集火：全隊打同一艘 —— 敵艦裡「剩的戰力 × 0.6 ＋ 離我方中心的距離 ÷ 1000 × 0.4」最小的（弱又近）；打到它出局才換。 */
+function cmdFocus(own, foes, mem, orders, want) {                         // want：玩家旗號「集火我的目標」指定的那艘（出局了 ⇒ 照上面的挑）
+  var ids = foes.map(function (f) { return f.id; });
+  if (want !== null && want !== undefined && ids.indexOf(want) >= 0 && mem.focus === undefined) mem.focus = want;
+  if (mem.focus === undefined || ids.indexOf(mem.focus) < 0) {
+    var c = cmdCenter(own), best = null, bs = 1e18, fw = cmdTune(mem, 'focusW', 0);   // fw：剩的戰力的權重，其餘給距離；0 ＝ 挑離我方中心最近的（自動調參，TASK-0687 2026-10-18；調之前 0.6）
+    foes.forEach(function (f) { var sc = fw * cmdStrength(f) + (1 - fw) * cmdDist(c, f) / 1000; if (sc < bs - 1e-9) { bs = sc; best = f; } });
+    mem.focus = best.id;
+  }
+  own.forEach(function (s) { orders[s.id] = { target: mem.focus, mode: 'engage' }; });
+}
+
+/** 戰列：旗艦（開戰排水量最大、還在打的；玩家旗號「成戰列跟我」⇒ 玩家那艘）帶頭；其他的排成縱隊，各自跟著前一艘（遊戲：照它的航跡 cmdHelmWake；沙盒：船尾 cmdHelmLine）。
+ *  順序記在 mem.line（新進場的接到尾巴、出局的拿掉 ⇒ 後面的往前補）。每艘打離自己最近的敵艦（全隊用朝敵那一舷：跟著前一艘的航跡走，舷側自然朝同一邊）。
+ *  排頭（TASK-0679，mode 'lead'）：照「整條戰列」開 —— 敵方中心擺在交戰那一舷（mem.side）、不換舷、不拉開；巡航 × pace（還沒排好 ⇒ 慢一點）。
+ *    交戰那一舷：敵方中心在排頭的哪一舷；遠（> 2.5 × 交戰距離）而且明顯在一側的時候才重看 ⇒ 接戰之後定下來，掉頭時整條不換舷。
+ *    ⛔ 以前排頭照一艘船的打法交戰（54_helm.js helmSteer：換舷、拉開、繞敵艦一艘轉圈）⇒ 後面的跟不上：量過 4 對 4、800 m，紅方跟隨 1.4–3 節、離站位 75–243 m。
+ *  只有一艘 ⇒ 照舊交戰（沒有戰列可帶，跟以前一位元都不差）。 */
+/** 戰列的排頭（沒有旗號指定時）：開局是橫隊 ⇒ 一齊轉向（turn together）—— 挑橫隊最外側、往外轉比較不頂風的那一端當排頭，交戰那一舷照往外轉的方向定（mem.side）；
+ *  其他船一開始就都在它後面，只要橫著收攏，不用誰往後退。不是橫隊（前後拉得比左右長 1/1.5 以上）⇒ 照舊挑最重的。挑了就記住（mem.pick），出局了才重挑。
+ *  ⛔ 照重量挑（以前）⇒ 4 艘一樣重 ⇒ 照編號，排頭剛好在橫隊第 2 個位置，不管往哪一舷轉都有船擋在航線上（開局頂風那一方：14–18 秒擦撞、排頭 5.8 → 0.1 節；
+ *    改讓法、改超前的判準都只消掉擦撞，四個種子隊形平均沒變好：量過 wdir=0 種子 1797／11／22／33）。 */
+function cmdLinePick(own, view, mem) {
+  var hv = own.slice().sort(function (a, b) { return b.mass - a.mass || a.id - b.id; })[0];
+  if (own.length < 2) return hv;
+  var c = cmdCenter(own), fx = 0, fz = 0;
+  own.forEach(function (s) { fx += Math.cos(s.yaw); fz -= Math.sin(s.yaw); });          // 平均船頭方向（fwd ＝ (cos yaw, −sin yaw)）
+  var fl = Math.hypot(fx, fz); if (fl < 1e-6) return hv; fx /= fl; fz /= fl;
+  var lx = fz, lz = -fx, lo = null, hi = null, a0 = 1e9, a1 = -1e9;                  // l：往左（yaw ＋ 90°）
+  own.forEach(function (s) { var l = (s.x - c.x) * lx + (s.z - c.z) * lz, a = (s.x - c.x) * fx + (s.z - c.z) * fz; if (!lo || l < lo.l) lo = { s: s, l: l }; if (!hi || l > hi.l) hi = { s: s, l: l }; a0 = Math.min(a0, a); a1 = Math.max(a1, a); });
+  if (hi.l - lo.l < 1 || hi.l - lo.l < 1.5 * (a1 - a0)) return hv;
+  var W = view && view.wind, offL = 0, offR = 0;                                    // 往外轉之後（往左 ⇒ 左端那艘、往右 ⇒ 右端）離正頂風幾 rad：大的比較好
+  if (W) { var wl = Math.hypot(W[0], W[1]) || 1, cu = Math.max(-1, Math.min(1, -(lx * W[0] + lz * W[1]) / wl)); offL = Math.acos(cu); offR = Math.acos(-cu); }
+  var useL = Math.abs(offL - offR) > 0.2 ? offL > offR : hi.s.mass > lo.s.mass || hi.s.mass === lo.s.mass && hi.s.id < lo.s.id;
+  mem.side = useL ? 'S' : 'P';                                                     // 往左轉 ⇒ 敵方落在右舷
+  return useL ? hi.s : lo.s;
+}
+function cmdLine(own, foes, mem, orders, view, leadId) {
+  // 武器朝船頭（船尾）的船（s.asp 'B'／'A'：持火號的 siphon、槳帆船的艏砲）不排進戰列 —— 戰列是兩舷對轟，跟著航跡走它的武器永遠對不到；
+  //   改成各自交戰（mode 'engage'）打離自己最近的敵艦，艦長照自己的武器靠過去（Tim 2026-10-18：「艦隊指揮官的邏輯 需要判斷我方武器射程去指揮船隻」）。
+  function near0(s) { var b = null, bd = 1e18; foes.forEach(function (f) { var d = cmdDist(s, f); if (d < bd) { bd = d; b = f; } }); return b; }
+  own.filter(function (s) { return s.asp === 'B' || s.asp === 'A'; }).forEach(function (s) { orders[s.id] = { target: near0(s).id, mode: 'engage' }; });
+  own = own.filter(function (s) { return s.asp !== 'B' && s.asp !== 'A'; });
+  if (!own.length) return;
+  if (leadId !== null && leadId !== undefined && !own.some(function (s) { return s.id === leadId; })) leadId = null;   // 玩家旗號「成戰列跟我」、玩家那艘卻是船頭接敵的 ⇒ 照平常挑排頭
+  var lead = own.filter(function (s) { return s.id === leadId; })[0] || own.filter(function (s) { return s.id === mem.pick; })[0];
+  if (!lead) { lead = cmdLinePick(own, view, mem); mem.pick = lead.id; }
+  var L = (mem.line || []).filter(function (id) { return id !== lead.id && own.some(function (s) { return s.id === id; }); });
+  // 新排進來的（開局整條、候補進場）：一艘一艘接 —— 離隊尾那艘「船尾後面一個間距」最近的先接（TASK-0679；⛔ 照編號 ⇒ 開局橫隊時第 2 艘跟在排頭左邊、第 3 艘跟第 2 艘卻在排頭右邊，整條交叉）
+  var rest = own.filter(function (s) { return s.id !== lead.id && L.indexOf(s.id) < 0; });
+  while (rest.length) {
+    var tail = L.length ? own.filter(function (o) { return o.id === L[L.length - 1]; })[0] : lead, LG = cmdTune(mem, 'lineGap', CMD_LINE_GAP), bx = tail.x - Math.cos(tail.yaw) * LG, bz = tail.z + Math.sin(tail.yaw) * LG;
+    rest.sort(function (a, b) { return Math.hypot(a.x - bx, a.z - bz) - Math.hypot(b.x - bx, b.z - bz) || a.id - b.id; });
+    L.push(rest.shift().id);
+  }
+  // 照實際的前後重排（遊戲量的 larc：沿排頭航跡離排頭多遠）：後面的已經跑到前面一艘前面 30 m 以上 ⇒ 對調（⛔ 照開局排的順序 ⇒ 隊尾那艘先切進航跡、擋在前一個站位的船前面，
+  //   兩艘並排 23 m 互相讓船，一艘離站位 98 m 卡住：量過紅方 120–180 秒）
+  for (var sw = 0; sw < L.length; sw++) for (var q = 0; q + 1 < L.length; q++) {
+    var A = own.filter(function (o) { return o.id === L[q]; })[0], B = own.filter(function (o) { return o.id === L[q + 1]; })[0];
+    if (A.larc !== undefined && A.larc !== null && B.larc !== undefined && B.larc !== null && A.loff < 30 && B.loff < 30 && B.larc < A.larc - 30) { L[q] = B.id; L[q + 1] = A.id; }   // 兩艘都在航跡上（離航跡 < 30 m）才算數：⛔ 還在旁邊排的時候投影出來的位置不準 ⇒ 一直對調、兩艘讓來讓去（量過：藍方整條倒過來、兩艘各讓 4800–5300 步）
+  }
+  mem.line = L;
+  function near(s) { var b = null, bd = 1e18; foes.forEach(function (f) { var d = cmdDist(s, f); if (d < bd) { bd = d; b = f; } }); return b; }
+  var prev = lead, err = 0, lag = 0, nl = 0;
+  L.forEach(function (id) {
+    var s = own.filter(function (o) { return o.id === id; })[0];
+    orders[id] = { target: near(s).id, mode: 'line', leader: prev.id, head: lead.id, slot: L.indexOf(id) + 1 };   // 站位每一步現算（遊戲：排頭的航跡上第 slot 個間距 cmdHelmWake；沙盒：前一艘的船尾 cmdHelmLine）
+    err += s.lerr !== undefined && s.lerr !== null ? s.lerr : cmdDist(s, cmdHelmLine(s, prev).station);   // 遊戲量的（離航跡上的站位）；沒有 ⇒ 舊的站位
+    if (s.llag !== undefined && s.llag !== null) { lag += s.llag; nl++; }
+    prev = s;
+  });
+  err = L.length ? err / L.length : 0; mem.lineErr = err; lag = nl ? lag / nl : null; mem.lineLag = lag;
+  // 排頭：隊形還沒排好（跟隨的平均離站位 > 60 m）⇒ 0.75 等後面的跟上（⛔ 全速 ⇒ 大家一樣快，後面的永遠追不上：量過 4 艘 40 秒，第 3、4 艘離站位 185 → 208、249 → 264 m；
+  //   ⛔ 0.5 ⇒ 頂風時整隊一起爬）—— throttle 給沙盒；遊戲的排頭照 pace（期望航速）
+  if (!L.length) { orders[lead.id] = { target: near(lead).id, mode: 'engage', throttle: 1 }; return; }
+  var E = cmdCenter(foes), R = view && view.R || 150, dE = cmdDist(lead, E) || 1;
+  var k = (Math.sin(lead.yaw) * (E.x - lead.x) + Math.cos(lead.yaw) * (E.z - lead.z)) / dE;   // ＝ 31_sailing.js chooseSide：右舷那一側的分量
+  if (!mem.side || dE > 2.5 * R && Math.abs(k) > 0.3) mem.side = k >= 0 ? 'S' : 'P';
+  // 排頭的快慢照「沿航跡落後多少」（遊戲量的 llag；沒有 ⇒ 照離站位）：後面的落後 ⇒ 慢一點等；在旁邊或超前（開局橫隊）⇒ 全速往前拉開，後面的才排得進航跡
+  //   （⛔ 照離站位 ⇒ 開局橫隊時跟隨的「離站位 150 m」但其實在排頭旁邊 ⇒ 排頭放慢、旁邊的也放慢，整隊 1.5 節排不起來：量過 113 秒）
+  var pace = lag === null ? (err > 60 ? CMD_PACE_FORM : CMD_PACE) : lag > 60 ? CMD_PACE_FORM : lag < -20 ? 1 : CMD_PACE;
+  orders[lead.id] = { target: near(lead).id, mode: 'lead', side: mem.side, pace: pace, throttle: err > 60 ? 0.75 : 1 };
+}
+/** 搶上風（TASK-0679；帆船時代的 weather gauge：在上風的一方決定什麼時候、從哪裡壓過去接戰）：
+ *  還沒搶到 ⇒ 全隊（戰列 ⇒ 排頭，後面的照航跡跟）迎風往敵方那一側搶（mode 'gauge'、tack；航向在遊戲那側照帆速曲線算，54_helm.js helmGauge）；
+ *  搶到（我方中心比敵方多上風 CMD_GAUGE_UP）／時間到（CMD_GAUGE_MAX 秒）／敵我已經接近（最近兩艘 < CMD_GAUGE_NEAR × 交戰距離）⇒ 不再搶，照策略接戰（只搶一次）。
+ *  進度 mem.gauge：{ st：'beat' 搶風中／'done' 搶到／'timeout'／'near', t0, tack, up（上風差 m）, near（最近兩艘 m）}。 */
+function cmdGauge(view, own, foes, mem, orders, strat) {
+  var G = mem.gauge || (mem.gauge = { st: 'beat', t0: view.t, tack: 0 });
+  if (G.st !== 'beat') return;
+  var O = cmdCenter(own), E = cmdCenter(foes), W = view.wind, R = view.R || 150, nr = 1e9;
+  own.forEach(function (s) { foes.forEach(function (f) { nr = Math.min(nr, cmdDist(s, f)); }); });
+  G.up = -((O.x - E.x) * W[0] + (O.z - E.z) * W[1]);                      // 我方比敵方多上風幾 m（W ＝ 風吹去的方向）
+  G.near = nr;
+  var lat = (E.x - O.x) * -W[1] + (E.z - O.z) * W[0];                    // 敵方在風軸的哪一側（＋ ＝ 風吹去的方向往左轉 90° 那一側）
+  if (G.up >= CMD_GAUGE_UP) G.st = 'done';
+  else if (view.t - G.t0 > CMD_GAUGE_MAX) G.st = 'timeout';
+  else if (nr < CMD_GAUGE_NEAR * R) G.st = 'near';
+  if (G.st !== 'beat') { G.tEnd = view.t; return; }
+  if (!G.tack || Math.abs(lat) > CMD_GAUGE_SIDE && (lat > 0 ? 1 : -1) !== G.tack) G.tack = lat >= 0 ? 1 : -1;
+  own.forEach(function (s) {
+    var o = orders[s.id];
+    if (strat === 'line' && o && o.mode === 'line') return;              // 戰列：後面的照前一艘的航跡跟（排頭在哪裡換舷，後面的就在哪裡換）
+    orders[s.id] = { target: o ? o.target : null, mode: 'gauge', tack: G.tack };
+  });
+}
+/** 戰列跟隨（TASK-0679，遊戲用；沙盒照舊 cmdHelmLine）：跟著前一艘的航跡 —— 實船的戰列是「依序在同一點轉」，不是跟著前一艘現在的船尾。
+ *  lead、wake：跟著誰、它走過的點（[x, z]，舊 → 新；最後一點 ＝ 它現在的位置）；比 gap 短 ⇒ 從最舊那一點沿最早那一段往後延長（開局還沒走出航跡）。
+ *  遊戲裡跟的是排頭（gap ＝ 第幾艘 × CMD_LINE_GAP；整條走同一條航跡），⛔ 跟前一艘 ⇒ 前一艘自己還在排、在繞，一路傳下去隊尾永遠排不進去（量過）。
+ *  站位 ＝ 航跡上離它 gap 的那一點。自己投影到航跡上（最近的那一段）⇒ 往前 max(CMD_WAKE_LA, 離航跡) 那一點開（純追蹤：從旁邊斜切進隊形、到了就順著走）。
+ *  期望航速 v（m/s）：沿航跡落後站位 lag ⇒ 前一艘的航速 ＋ lag × CMD_WAKE_K（最慢 CMD_WAKE_VMIN：舵要有水流）；落後 CMD_WAKE_FAR 以上、或離航跡 60 m 以上又落後 ⇒ Infinity（全速）。
+ *  ⛔ 以前跟「前一艘現在的船尾往後 90 m」⇒ 前一艘一轉向，站位整個甩到另一邊，後面的切內角追、又撞上讓船；快慢用放掉風硬拉（throttle）⇒ 帆裝不動、一放就掉到 1 節以下。
+ *  s、lead：{ x, z, yaw, spd }。回傳 { yaw, v, station, err（離站位直線 m）, lag（沿航跡落後 m，負 ＝ 超前）, off（離航跡 m）}。 */
+function cmdHelmWake(s, lead, wake, gap) {
+  gap = gap || CMD_LINE_GAP;
+  var P = (wake || []).slice(); P.push([lead.x, lead.z]);
+  var n = P.length, c = new Array(n), i; c[n - 1] = 0;
+  for (i = n - 2; i >= 0; i--) c[i] = c[i + 1] + Math.hypot(P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1]);
+  var bx, bz;                                                            // 最舊那一點往後延長的方向
+  if (n >= 2 && c[0] > 1e-6) { var j = 0; while (j < n - 2 && Math.hypot(P[j + 1][0] - P[0][0], P[j + 1][1] - P[0][1]) < 1e-6) j++; var lx = P[0][0] - P[j + 1][0], lz = P[0][1] - P[j + 1][1], ll = Math.hypot(lx, lz) || 1; bx = lx / ll; bz = lz / ll; }
+  else { bx = -Math.cos(lead.yaw); bz = Math.sin(lead.yaw); }
+  function at(a) {                                                       // 航跡上離前一艘 a（m）的那一點
+    if (a <= 0) return [P[n - 1][0], P[n - 1][1]];
+    if (a >= c[0]) return [P[0][0] + bx * (a - c[0]), P[0][1] + bz * (a - c[0])];
+    for (var k = n - 2; k >= 0; k--) if (c[k] >= a) { var f = (a - c[k + 1]) / ((c[k] - c[k + 1]) || 1); return [P[k + 1][0] + (P[k][0] - P[k + 1][0]) * f, P[k + 1][1] + (P[k][1] - P[k + 1][1]) * f]; }
+    return [P[0][0], P[0][1]];
+  }
+  // 投影：每一段（含往後延長的那一段，長 1000 m）找最近的點
+  var bd = 1e18, ba = 0, qx = P[n - 1][0], qz = P[n - 1][1];
+  function seg(ax, az, ca, ex, ez, ce) {                                 // 線段 a（航跡長 ca）→ e（ce）
+    var ux = ex - ax, uz = ez - az, L2 = ux * ux + uz * uz, t = L2 > 0 ? Math.max(0, Math.min(1, ((s.x - ax) * ux + (s.z - az) * uz) / L2)) : 0;
+    var px = ax + ux * t, pz = az + uz * t, d = Math.hypot(s.x - px, s.z - pz); if (d < bd) { bd = d; ba = ca + (ce - ca) * t; qx = px; qz = pz; }
+  }
+  for (i = 0; i < n - 1; i++) seg(P[i][0], P[i][1], c[i], P[i + 1][0], P[i + 1][1], c[i + 1]);
+  seg(P[0][0] + bx * 1000, P[0][1] + bz * 1000, c[0] + 1000, P[0][0], P[0][1], c[0]);
+  if (n === 1) { bd = Math.hypot(s.x - P[0][0], s.z - P[0][1]); ba = 0; }
+  var st = at(gap), lag = ba - gap, la = Math.max(CMD_WAKE_LA, bd), tg = at(Math.max(0, ba - la)), yaw, v;
+  if (lag < -Math.max(30, 0.5 * bd) && bd > 30) {                       // 超前站位比離航跡的一半還多（開局橫隊在排頭旁邊）才算；⛔ 只看 lag < 0 ⇒ 沿航跡已經到了、只是橫向離航跡 224 m 的那艘也被當成「在旁邊」，0.8 m/s 爬 3 分鐘（量過 wdir=0 藍方 181 秒：lag −2、離航跡 224 m、1.8 節）
+    // 在航跡旁邊、而且還沒落到站位後面（開局橫隊）⇒ 慢下來讓排頭往前拉開，船頭跟排頭同向、往航跡偏（最多 35°）；落到站位後面就照下面追
+    // ⛔ 往前面的追蹤點開 ⇒ 一直跟它並排（量過：橫隊開局 113 秒，第 3、4 艘並排在旁邊 150–185 m、1.5 節）；
+    // ⛔ 掉頭往站位後面開 ⇒ 一路橫切別艘的航線、讓船讓到每艘 3000–5000 步（50–80 秒），離站位反而 100–160 m（量過）
+    var fx = Math.cos(lead.yaw), fz = -Math.sin(lead.yaw), wx = (qx - s.x) / bd, wz = (qz - s.z) / bd, k = Math.min(0.7, bd / 100);
+    if (ba < CMD_WAKE_LA) {                                              // 投影落在排頭身上（在排頭旁邊或前面）⇒ 往航跡偏 ＝ 往排頭身上開 ⇒ 改成往遠離排頭那邊偏
+      var dl = Math.hypot(s.x - lead.x, s.z - lead.z) || 1; wx = (s.x - lead.x) / dl; wz = (s.z - lead.z) / dl; k = CMD_WAKE_AWAY;
+    }   // ⛔ 照舊 ⇒ 開局橫隊、排到隊尾的那艘在排頭另一舷 66 m，排頭往那一舷搶風、它又往排頭偏 ⇒ 14 秒擦撞，排頭 5.8 → 0.1 節、整條耗掉（量過 wdir=0 藍方）
+    yaw = Math.atan2(-(fz + wz * k), fx + wx * k);
+    v = CMD_WAKE_VMIN;                                                   // ⛔ 試過 0.4 m/s（往後退快三成）⇒ 種子 22 接戰時排頭急轉、後面的被判成超前就停在 0.4 m/s，兩方都掉到 0.8–1.5 節（量過）
+  } else {
+    yaw = ba - la <= 0 && lag < 0 ? lead.yaw : Math.atan2(-(tg[1] - s.z), tg[0] - s.x);   // 追到前一艘正後方、貼著航跡又超前一點 ⇒ 跟它同向
+    v = lag > CMD_WAKE_FAR || bd > 60 && lag > 0 ? Infinity : Math.max(CMD_WAKE_VMIN, (lead.spd || 0) + lag * CMD_WAKE_K);
+  }
+  return { yaw: yaw, v: v, station: st, err: Math.hypot(s.x - st[0], s.z - st[1]), lag: lag, off: bd };
+}
+
+/** 戰列跟隨的舵與油門（遊戲與沙盒共用；每一步照前一艘「現在」的位置算 ⇒ 命令只記跟著誰，⛔ 站位在想的那一刻算 ⇒ 3 秒內前一艘走了十幾公尺、站位就過時）：
+ *  站位 ＝ 前一艘往它船尾方向退 CMD_LINE_GAP；往「站位再往前 60 m」那一點開（⇒ 從後面追上來時斜著切進隊形、到了就順著前一艘的航向）；
+ *  超過站位 ⇒ 放慢；落後 ⇒ 全速。s、lead：{ x, z, yaw }。回傳 { yaw, throttle, station }。 */
+function cmdHelmLine(s, lead) {
+  var fx = Math.cos(lead.yaw), fz = -Math.sin(lead.yaw), st = [lead.x - fx * CMD_LINE_GAP, lead.z - fz * CMD_LINE_GAP];
+  var px = st[0] + fx * 60, pz = st[1] + fz * 60;
+  var yaw = Math.atan2(-(pz - s.z), px - s.x);
+  var ahead = (s.x - st[0]) * fx + (s.z - st[1]) * fz;                       // 正 ＝ 超過站位
+  var same = Math.cos(s.yaw) * fx - Math.sin(s.yaw) * fz > 0.5;              // 船頭跟前一艘大致同向（60° 內）
+  // 超前（而且同向）⇒ 不掉頭：跟前一艘平行、放慢，等它過去；落後或方向不同 ⇒ 往追蹤點開、全速。
+  // ⛔ 不看同不同向 ⇒ 前一艘掉頭之後，本來在後面的變成「超前」⇒ 放慢，其實它該全速掉頭（量過：整隊 0.04–1 節爬）；
+  // ⛔ 超前也往後面的追蹤點開 ⇒ 舵一直想掉頭、又被放慢 ⇒ 舵靠航速才轉得動（最慢 0.012 rad/s），卡在原地（量過：離站位 200 m、0.03 節）。
+  if (same && ahead > 5) return { yaw: lead.yaw, throttle: ahead > 25 ? 0.35 : 0.7, station: st };
+  return { yaw: yaw, throttle: 1, station: st };
+}
+// ── js/56_rollout.js ──
+// ───────────────────────── 艦隊指揮官 AI ②：對戰中往前推演（TASK-0688） ─────────────────────────
+// Tim 2026-10-17：「對戰中往前推演 這個可以用精簡版本邏輯(類似下棋) 可以只考慮風速 船隻帆的狀況 等因素 用較粗的時間刻度(3秒一步? 可以抽成參數調整測試)
+//   跑幾步去預測策略 不追求完全對齊(現實海戰指揮官有的資訊更少)」
+// 策略「推演」（CMD_STRATS 的 'auto'）：每 ROLL_EVERY 秒把候選策略（ROLL_CANDS）各往前推 ROLL_N 步（一步 ROLL_DT 秒），挑推到最後「我方剩的戰力 − 敵方剩的戰力」最大的那個。
+// ⛔ 這一檔跟 53_commander.js 一樣是純邏輯：只讀局勢 view、不碰遊戲的全域變數 ⇒ 遊戲與 2D 沙盒載入同一份。不抽亂數：每一發照命中率取期望值（⇒ 同一局重跑逐位元相同）。
+// 精簡模型（沒有格子、砲彈、帆與繩的物理、進水；數字照 2D 沙盒 sb_sim.js 從遊戲量的那組）：
+//   航行：航速 ＝ 滿帆側風航速（view 的 vs）× 帆剩多少 × 風向係數（＝ 31_sailing.js POLAR，逆風壓縮照 up），額外動力 vb 照 √(帆² ＋ 動力²) 合成；加減速時間常數 20 秒；
+//         轉向率 ＝ max(0.03, 0.012 ＋ 0.016 × 航速 ÷ 航速倍率) × 舵效（ag）（＝ 31_sailing.js，天氣、錨不抄）。
+//   操舵：交戰 ＝ 31_sailing.js 的交戰操舵（敵艦擺在有砲的那一舷、照距離往內切或往外拉）；戰列跟隨 ＝ cmdHelmLine（跟前一艘的船尾，⛔ 遊戲照排頭航跡，這裡粗）；
+//         排頭 ＝ 交戰、舷照命令；搶上風 ＝ 迎風 65° 往命令的那一側；船頭／船尾武器的船 ＝ 船頭對準目標。不讓船、不擦撞。
+//   開砲：兩舷各自，敵艦落在那一舷正橫 ± ROLL_ARC（加對方半個船長）、ROLL_RMAX 以內 ⇒ 每秒 砲數 × 人 × ROLL_SHOT 發、照距離的命中率；
+//         每中一發：船殼 1 ÷（ROLL_HULL ×（排水量 ÷ 2154）^0.7）、人 ROLL_CREW 人、朝它那一舷的砲 ROLL_GUN 門、帆 ROLL_CLOTH × 帆^4。
+//   敵方：指揮官不知道對方的策略 ⇒ 假設每艘打離自己最近的（'free'）。
+// 預算：每次決策最多推 ROLL_BUDGET「船‧步」（候選數 × 步數 × 艘數）；超過就把步數等比縮短。⛔ 不照毫秒截斷 —— 機器快慢會讓同一局重跑挑出不同的策略；毫秒只量來報。
+var ROLL_DT = 3, ROLL_N = 30, ROLL_EVERY = 30, ROLL_MARGIN = 0.02, ROLL_BUDGET = 3000;   // 一步幾秒、推幾步、幾秒重推一次、換策略要好過現在的幾分（每艘戰力差）、預算（船‧步）
+var ROLL_CANDS = ['pair', 'focus', 'line'], ROLL_FOE = 'free';                 // ROLL_FOE：假設敵方用哪個策略（指揮官不知道對方的）
+var ROLL_POLAR = [[0, 0.72], [45, 1], [90, 0.92], [112, 0.6], [125, 0.32], [180, 0.25]];   // ＝ 31_sailing.js POLAR
+var ROLL_SHOT = 1 / 8.3;                                                 // 一門砲每秒幾發（滿員）：裝填 7 × 0.87 ＋ 電腦兩輪之間等 2.25 秒（sb_sim.js SB_CAL）
+var ROLL_HIT = [[100, 0.60], [150, 0.50], [200, 0.51], [300, 0.41], [400, 0.38], [600, 0.35], [800, 0.33], [1000, 0.2]];   // ＝ sb_sim.js SB_CAL.hit
+var ROLL_HULL = 900, ROLL_CREW = 0.35, ROLL_GUN = 0.116, ROLL_CLOTH = 0.0067, ROLL_ARC = 0.45, ROLL_RMAX = 1000;   // ROLL_CLOTH ＝ 0.4 × 0.05 ÷ 3 根桅（sb_sim.js sbRig 的期望值）
+
+function rollPolar(deg) { var P = ROLL_POLAR; for (var i = 1; i < P.length; i++) if (deg <= P[i][0]) { var a = P[i - 1], b = P[i]; return a[1] + (b[1] - a[1]) * (deg - a[0]) / (b[0] - a[0]); } return P[P.length - 1][1]; }
+function rollHitD(d) { var H = ROLL_HIT; if (d <= H[0][0]) return H[0][1]; for (var i = 1; i < H.length; i++) if (d <= H[i][0]) { var a = H[i - 1], b = H[i]; return a[1] + (b[1] - a[1]) * (d - a[0]) / (b[0] - a[0]); } return 0; }
+function rollWrap(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+function rollClamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+/** 局勢裡的一艘 ⇒ 推演用的船。view 沒給的欄位（2D 沙盒、舊的 view）⇒ 照憲法號估。 */
+function rollShip(s) {
+  var gT = s.gT || 54, g = s.guns === undefined ? 1 : s.guns;
+  return { id: s.id, team: s.team, x: s.x, z: s.z, yaw: s.yaw, spd: Math.max(0, s.spd || 0), hp: s.hp === undefined ? 1 : s.hp, crew: s.crew === undefined ? 1 : s.crew,
+    gP: s.gP !== undefined ? s.gP : gT * g / 2, gS: s.gS !== undefined ? s.gS : gT * g / 2, gT: gT, nc: s.nc || 313, sail: s.sail === undefined ? 1 : s.sail,
+    vs: s.vs || 3.6, vb: s.vb || 0, up: s.up || 1, ag: s.ag || 1, spk: s.spk || 1, mass: s.mass || 2154, len: s.len || 55.5, out: !!s.out, cmd: s.cmd !== false, asp: s.asp || 'side', side: 'S' };
+}
+function rollGuns(r) { return r.gT ? rollClamp((r.gP + r.gS) / r.gT, 0, 1) : 0; }
+function rollView(t, W, side, R, gauge, tune, S) {
+  return { t: t, side: side, wind: W, R: R, gauge: gauge, tune: tune, ships: S.map(function (r) {
+    return { id: r.id, team: r.team, x: r.x, z: r.z, yaw: r.yaw, spd: r.spd, hp: Math.max(0, r.hp), guns: rollGuns(r), crew: Math.max(0, r.crew), mass: r.mass, len: r.len, out: r.out, cmd: true, tgt: r.foe ? r.foe.id : null, asp: r.asp };
+  }) };
+}
+/** 這一方剩的戰力加總（cmdStrength 同一把尺）。 */
+function rollPow(S, team) { var p = 0; S.forEach(function (r) { if (r.team === team && !r.out) p += 0.5 * Math.max(0, r.hp) + 0.3 * rollGuns(r) + 0.2 * Math.max(0, r.crew); }); return p; }
+/** 分數（side 那一方看）：(我方剩的戰力 − 敵方剩的戰力) ÷ 兩方開局艘數較多的那邊。 */
+function rollScore(S, side, n) { return (rollPow(S, side) - rollPow(S, side === 'blue' ? 'red' : 'blue')) / (n || 1); }
+function rollViewScore(view) {
+  var n = { blue: 0, red: 0 }, S = view.ships.map(rollShip); S.forEach(function (r) { n[r.team]++; });
+  return rollScore(S, view.side, Math.max(n.blue, n.red));
+}
+
+/** 替 view.side 那一方，用策略 strat 往前推 steps 步 ⇒ 分數。mem0：這一方現在的記憶（只拿搶上風的進度與覆寫，其他的照新策略重來）。 */
+function rollRun(view, strat, mem0, steps) {
+  var side = view.side, W = view.wind, R = view.R || 150, dt = ROLL_DT;
+  var S = view.ships.map(rollShip), byId = {}, n = { blue: 0, red: 0 };
+  S.forEach(function (r) { byId[r.id] = r; n[r.team]++; });
+  var mem = { tn: mem0 && mem0.tn || null }, foeMem = {};
+  if (mem0 && mem0.gauge) mem.gauge = JSON.parse(JSON.stringify(mem0.gauge));
+  if (mem0 && mem0.side) mem.side = mem0.side;
+  for (var k = 0; k < steps; k++) {
+    var t = view.t + k * dt, live = S.filter(function (r) { return !r.out; });
+    if (!live.some(function (r) { return r.team === 'blue'; }) || !live.some(function (r) { return r.team === 'red'; })) break;
+    var od = cmdThink(rollView(t, W, side, R, view.gauge, view.tune, S), strat, mem);
+    var oe = cmdThink(rollView(t, W, side === 'blue' ? 'red' : 'blue', R, false, null, S), ROLL_FOE, foeMem);
+    for (var q in oe) od[q] = oe[q];
+    live.forEach(function (r) {                                            // 目標：命令的（還在打的敵艦）；不然最近的（＝ 52_fleet.js pickFoes）
+      var o = od[r.id], f = o && o.target !== null && o.target !== undefined ? byId[o.target] : null;
+      if (!f || f.out || f.team === r.team) { f = null; var bd = 1e18; live.forEach(function (e) { if (e.team === r.team) return; var d = Math.hypot(e.x - r.x, e.z - r.z); if (d < bd) { bd = d; f = e; } }); }
+      r.foe = f;
+    });
+    live.forEach(function (r) { rollMove(r, od[r.id], byId, W, R, dt); });
+    var dmg = [];
+    live.forEach(function (r) { rollFire(r, live, dt, dmg); });
+    dmg.forEach(function (h) { rollTake(h.tgt, h.from, h.n); });
+    S.forEach(function (r) { if (!r.out && (r.hp <= 0 || r.crew <= 0)) r.out = true; });
+  }
+  return rollScore(S, side, Math.max(n.blue, n.red));
+}
+function rollMove(r, o, byId, W, R, dt) {
+  var f = r.foe, tY = r.yaw, thr = o && o.throttle !== undefined ? o.throttle : 1;
+  if (o && o.mode === 'line' && byId[o.leader] && !byId[o.leader].out) { var hl = cmdHelmLine(r, byId[o.leader]); tY = hl.yaw; thr = hl.throttle; }
+  else if (o && o.mode === 'gauge') {                                   // 迎風 65° 往 tack 那一側（tack ＋ ＝ 風吹去的方向往左轉 90° 那一側；＝ 53_commander.js cmdGauge）
+    var ux = -W[0], uz = -W[1], lx = -W[1], lz = W[0], c = Math.cos(65 / 57.2958), s = Math.sin(65 / 57.2958) * (o.tack || 1);
+    tY = Math.atan2(-(c * uz + s * lz), c * ux + s * lx);
+  }
+  else if (f) {
+    var dx = f.x - r.x, dz = f.z - r.z, d = Math.hypot(dx, dz) || 1;
+    if (r.asp === 'B' || r.asp === 'A') tY = Math.atan2(-dz, dx) + (r.asp === 'A' ? Math.PI : 0);   // 船頭（船尾）的武器 ⇒ 船頭（船尾）對準
+    else {                                                                 // ＝ 31_sailing.js 交戰操舵（sb_sim.js sbSail 抄的那一段）
+      var k = (dx * Math.sin(r.yaw) + dz * Math.cos(r.yaw)) / d;
+      if (o && o.mode === 'lead' && o.side) r.side = o.side; else if (k > 0.2) r.side = 'S'; else if (k < -0.2) r.side = 'P';
+      var other = r.side === 'S' ? 'P' : 'S', have = r.side === 'S' ? r.gS : r.gP, alt = r.side === 'S' ? r.gP : r.gS;
+      var present = have > 0 || !(alt > 0) ? r.side : other, sg = present === 'P' ? 1 : -1;
+      tY = (sg > 0 ? Math.atan2(-dx / d, -dz / d) : Math.atan2(dx / d, dz / d)) + sg * rollClamp((d - R) / R * 1.5, -0.4, 1.2);
+    }
+    if (o && o.mode === 'lead' && o.pace) thr = Math.min(thr, o.pace);
+  }
+  var rmax = Math.max(0.03, 0.012 + 0.016 * r.spd / r.spk) * r.ag, dy = rollClamp(rollWrap(tY - r.yaw), -rmax * dt, rmax * dt), y1 = r.yaw + dy;
+  var F = [Math.cos(y1), -Math.sin(y1)], deg = Math.acos(rollClamp(F[0] * W[0] + F[1] * W[1], -1, 1)) * 57.2958, dU = r.up === 1 || deg <= 90 ? deg : 90 + (deg - 90) / r.up;
+  var vS = r.vs * r.sail * rollPolar(dU), v = Math.hypot(vS, r.vb) * thr, s0 = r.spd;
+  r.spd += (v - r.spd) * Math.min(1, dt / 20);
+  var ym = r.yaw + dy / 2, sm = (s0 + r.spd) / 2;
+  r.yaw = y1; r.x += Math.cos(ym) * sm * dt; r.z += -Math.sin(ym) * sm * dt;
+}
+function rollFire(r, live, dt, dmg) {
+  ['P', 'S'].forEach(function (side) {
+    var ng = side === 'S' ? r.gS : r.gP; if (!(ng > 0)) return;
+    var nrm = side === 'S' ? [Math.sin(r.yaw), Math.cos(r.yaw)] : [-Math.sin(r.yaw), -Math.cos(r.yaw)], best = null, bs = 1e18, bd = 0;
+    live.forEach(function (e) {
+      if (e.team === r.team || e.out) return;
+      var dx = e.x - r.x, dz = e.z - r.z, d = Math.hypot(dx, dz); if (d > ROLL_RMAX) return;
+      if (Math.acos(rollClamp((dx * nrm[0] + dz * nrm[1]) / (d || 1), -1, 1)) > ROLL_ARC + Math.atan2(e.len / 2, d)) return;
+      var sc = d * (e === r.foe ? 0.5 : 1); if (sc < bs) { bs = sc; best = e; bd = d; }
+    });
+    if (!best) return;
+    var h = ng * Math.max(0.3, r.crew) * ROLL_SHOT * dt * rollHitD(bd) * Math.min(1, Math.pow(best.len / 55.5, 0.7));
+    if (h > 0) dmg.push({ tgt: best, from: r, n: h });
+  });
+}
+function rollTake(t, from, h) {
+  t.hp -= h / (ROLL_HULL * Math.pow(t.mass / 2154, 0.7));
+  t.crew = Math.max(0, t.crew - h * ROLL_CREW / t.nc);
+  var ts = ((from.x - t.x) * Math.sin(t.yaw) + (from.z - t.z) * Math.cos(t.yaw)) > 0 ? 'S' : 'P';
+  if (ts === 'S') t.gS = Math.max(0, t.gS - h * ROLL_GUN); else t.gP = Math.max(0, t.gP - h * ROLL_GUN);
+  t.sail = Math.max(0, t.sail - h * ROLL_CLOTH * Math.pow(t.sail, 4));
+}
+function rollNow() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
+
+/** 策略「推演」：這一次要照哪個策略想（53_commander.js cmdThink 開頭叫）。進度記在 mem.roll（換策略時 cmdThink 留著它）：
+ *  { t（上一次推的時間）, pick（挑中的）, sc（各候選的分數）, steps（推了幾步）, ms（花了幾毫秒，只報不用）, n（推了幾次）, said（報過了沒）,
+ *    pred（挑中的那個預測：{ t0, t1, v（預測 t1 的分數）, v0（推的那一刻的分數）}）, errs（到期的預測 [t1, 預測, 實際]，最多 20 筆）} */
+function rollStrat(view, mem) {
+  var R = mem.roll;
+  if (R && R.pred && view.t >= R.pred.t1 - 1e-6) {                       // 預測到期 ⇒ 記落差（只拿來參考，不影響挑選）
+    var now = rollViewScore(view); R.errs.push([+R.pred.t1.toFixed(1), +R.pred.v.toFixed(3), +now.toFixed(3)]); if (R.errs.length > 20) R.errs.shift(); R.pred = null;
+  }
+  if (R && view.t - R.t < ROLL_EVERY - 1e-6) return R.pick;
+  var nShip = view.ships.filter(function (s) { return !s.out; }).length || 1, steps = Math.max(1, Math.min(ROLL_N, Math.floor(ROLL_BUDGET / (ROLL_CANDS.length * nShip))));
+  var t0 = rollNow(), sc = {}, best = null;
+  ROLL_CANDS.forEach(function (c) { sc[c] = rollRun(view, c, mem, steps); if (best === null || sc[c] > sc[best] + 1e-9) best = c; });
+  var pick = R && R.pick && sc[R.pick] !== undefined && sc[R.pick] >= sc[best] - ROLL_MARGIN ? R.pick : best;   // 現在的沒差到 ROLL_MARGIN ⇒ 不換（換策略會讓配對、戰列重來）
+  var errs = R ? R.errs : [], prev = R ? R.pick : null;
+  mem.roll = { t: view.t, pick: pick, prev: prev, sc: sc, steps: steps, ms: rollNow() - t0, n: (R ? R.n : 0) + 1, said: false, errs: errs,
+    pred: R && R.pred ? R.pred : { t0: view.t, t1: view.t + steps * ROLL_DT, v: sc[pick], v0: rollViewScore(view) } };   // 上一個預測還沒到期 ⇒ 留著它（⛔ 每 30 秒重推就換一個新的 ⇒ 90 秒的預測永遠等不到期，落差一筆都量不到）
+  return pick;
+}
+/** 推演那一次的理由（戰鬥報表、上方廣播用）。 */
+function rollText(R) {
+  var s = ROLL_CANDS.map(function (c) { return CMD_NAMES[c] + ' ' + (R.sc[c] >= 0 ? '+' : '') + R.sc[c].toFixed(3); }).join('／');
+  var e = R.errs.length ? R.errs[R.errs.length - 1] : null;
+  return '指揮官（推演 ' + Math.round(R.steps * ROLL_DT) + ' 秒）：' + s + ' ⇒ ' + CMD_NAMES[R.pick] + (R.prev && R.prev !== R.pick ? '（原本' + CMD_NAMES[R.prev] + '）' : '') +
+    '，' + R.ms.toFixed(1) + ' ms' + (e ? '；上一次預測 ' + (e[1] >= 0 ? '+' : '') + e[1].toFixed(3) + '、實際 ' + (e[2] >= 0 ? '+' : '') + e[2].toFixed(3) : '');
+}
+// ── js/sb_sim.js ──
+// ───────────────────────── 2D 策略沙盒：模擬（TASK-0551） ─────────────────────────
+// 只算指揮官要的東西：船的位置、航向、航速（照風）、兩舷的砲、三條血（船殼、砲、人）、每根桅的帆 —— 沒有格子、沒有砲彈的飛行、不跑帆與繩的物理。
+// 跟遊戲共用（同一份檔）：指揮官 53_commander.js（cmdThink、cmdHelmLine）。
+// 照抄遊戲的公式（遊戲改了要跟著改；出處寫在旁邊）：帆速曲線、逆風壓縮、航速與加減速、轉向率、交戰操舵（31_sailing.js）、開局編隊（52_fleet.js spawnFleet）。
+// 數字從遊戲量（SB_CAL、SB_HULLS；量法與讀數在 README「指揮官」與 TASK-0551）。
+var SB_POLAR = [[0, 0.72], [45, 1], [90, 0.92], [112, 0.6], [125, 0.32], [180, 0.25]];   // ＝ 31_sailing.js POLAR
+var SB_VMAX = 3.6, SB_DT = 0.1;                                                          // ＝ 31_sailing.js VMAX；沙盒一步 0.1 秒（遊戲 1/60）
+var SB_FUN = { speed: 1.4, agile: 1.5 };                                                 // 玩法「娛樂」的加成（04_state.js LIM.funspeed／funagile 的預設）
+// 船型（遊戲量的，2026-10-14：開一場、讀 __game.ships() 的砲（兩舷、砲種）、船員、船隻設定、水線長、開戰排水量）。reload ＝ 砲種的裝填倍率平均（10_ship.js GUNS）。
+var SB_HULLS = {
+  constitution: { name: '憲法號', guns: { P: 27, S: 27 }, reload: 0.87, crew: 313, speed: 1, agile: 1, upwind: 1, len: 55.5, mass: 2154, masts: 3 },
+  ember: { name: '餘燼號', guns: { P: 45, S: 45 }, reload: 0.99, crew: 540, speed: 0.85, agile: 0.7, upwind: 1, len: 62.4, mass: 3098, masts: 3 },
+  falcon: { name: '夜隼號', guns: { P: 6, S: 6 }, reload: 0.6, crew: 55, speed: 1.2, agile: 1.6, upwind: 1.25, len: 20.2, mass: 75, masts: 2 }
+};
+// 校準（遊戲量的，2026-10-14；量法：兩艘憲法號平行對轟、每秒拉回原位，距離 100／150／200／300／400／600／800 m 各 60 秒，兩邊合計）：
+//   hit：每一發打中的機率 ＝ 兩邊的命中 ÷ 開火（兩邊差很多：一邊 ~30%、一邊 ~70%，跟距離無關 —— 風讓船傾、上風舷與下風舷的砲口高低不同；沙盒不模擬傾斜 ⇒ 取平均）。
+//     對方小一號 ⇒ 乘 (水線長 ÷ 55.5)^0.7（只量了憲法號，這是估的）。
+//   每中一發：少 gunHit 門砲（105 ÷ 905）、倒 crewHit 人 ——
+//     ⛔ 那一組量到 1.30 人（陣亡＋受傷 1,174 ÷ 905）太多：電腦對電腦 420 秒（種子 7／42／1797）挨 720 發的那艘只陣亡 169、沒全員倒下 ⇒ 用 0.35。
+//   船殼：遊戲沉船靠水線下的洞慢慢進水（60 秒上百發只沉 0–0.016 m）⇒ 沙盒用「幾發沉」近似：憲法號 hullHits 發，別的船型照排水量^0.7 換算；
+//     電腦對電腦 420 秒三個種子都沒沉（各挨 38–720 發）⇒ 900（README 舊的「290 秒打沉」是船變耐打之前的讀數）。
+//   開火：一門裝填 reload × 船型倍率 秒（遊戲 RELOAD 7），電腦兩輪之間再等 wait 秒（50_sim.js ai 的 aiWait 1–3.5 秒平均）⇒ 憲法號約 8.3 秒一輪（量的：60 秒 170–190 發 ≈ 27 門 × 7 輪）。
+//   帆（Tim 2026-10-14：模擬帆破損導致的減速，簡易、隨機，不跑物理）：每根桅一份帆（cloth 0..1），帆剩多少 S ＝ 還立著的桅的 cloth 平均（倒了的算 0）；航速 × S（＝ 遊戲的 sailFrac）。
+//     每中一發：機率 mastP × S^mastE 打倒一根還立著的桅（隨機挑；上面的帆整份沒了），否則機率 clothP × S^clothE 打到帆、隨機一根桅的帆掉 chunk。
+//     S 的次方：帆越少越難打中、桅也越難倒（遊戲裡挨打越久帆掉得越慢）。數字照遊戲擬合（4 對 4 憲法號、140 m、300 秒、12 場 96 艘次，每 10 秒記 sailFrac 與倒桅，每艘每秒挨約 1.15 發）：
+//       挨 43／85／167／344 發 ⇒ 遊戲 帆 0.83／0.67／0.57／0.46、倒桅 0.03／0.16／0.29／0.46 根；擬合 0.81／0.71／0.60／0.45、0.10／0.16／0.24／0.42。
+//     ⛔ 以前每中一發扣 0.93%（兩艘平行對轟 60 秒量的）⇒ 300 秒帆只剩 9–17%，船幾乎停住；遊戲同樣 300 秒還有 46%。
+var SB_CAL = { hit: [[100, 0.60], [150, 0.50], [200, 0.51], [300, 0.41], [400, 0.38], [600, 0.35], [800, 0.33], [1000, 0.2]], crewHit: 0.35, gunHit: 0.116,
+  sail: { mastP: 0.003, mastE: 2, clothP: 0.4, clothE: 4, chunk: 0.05 },
+  hullHits: 900, reload: 7, wait: 2.25, rmax: 1000, arc: 0.45, sinkT: 20 };
+function sbPolar(deg) { for (var i = 1; i < SB_POLAR.length; i++) if (deg <= SB_POLAR[i][0]) { var a = SB_POLAR[i - 1], b = SB_POLAR[i]; return a[1] + (b[1] - a[1]) * (deg - a[0]) / (b[0] - a[0]); } return SB_POLAR[SB_POLAR.length - 1][1]; }
+function sbHit(d, tgt) { return sbHitD(d) * Math.min(1, Math.pow(tgt.H.len / 55.5, 0.7)); }
+function sbHitD(d) { var H = SB_CAL.hit; if (d <= H[0][0]) return H[0][1]; for (var i = 1; i < H.length; i++) if (d <= H[i][0]) { var a = H[i - 1], b = H[i]; return a[1] + (b[1] - a[1]) * (d - a[0]) / (b[0] - a[0]); } return 0; }
+function sbRng(seed) { var s = (seed >>> 0) || 1; return function () { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; }
+function sbClamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function sbWrap(a) { return Math.atan2(Math.sin(a), Math.cos(a)); }
+
+/** 開一場：opt ＝ { blue: [船型…], red: […], cmd: { blue, red }（策略）, dist（船頭相距 m）, seed, wind（風吹去的方向 rad）, windSpd（風速倍率）, play（'fun'／'real'）}。
+ *  風向、風速不給 ⇒ 照種子（＝ 遊戲 08_weather.js windInit：風向 0–360°、風速 0.6–1.5 倍）。 */
+function sbNew(opt) {
+  var rng = sbRng(opt.seed || 1), wa = opt.wind !== undefined ? opt.wind : rng() * Math.PI * 2, ws = rng();
+  var W = { t: 0, rng: rng, ships: [], wind: [Math.cos(wa), Math.sin(wa)], windSpd: opt.windSpd !== undefined ? opt.windSpd : 0.6 + 0.9 * ws, play: opt.play || 'fun', dist: opt.dist || 140,
+    cmd: opt.cmd || { blue: 'pair', red: 'pair' }, mem: { blue: {}, red: {} }, orders: {}, over: null, log: [] };
+  // 開局編隊（＝ 52_fleet.js spawnFleet）：藍往 −z、紅往 +z，船頭相距 dist；同一邊橫隊左右隔 70 m、從中間往兩側排
+  function slots(m) { var r = []; for (var q = 0; q < m; q++) r.push((q - (m - 1) / 2) * 70); return r.sort(function (a, b) { return Math.abs(a) - Math.abs(b) || a - b; }); }
+  var spec = [];
+  [['blue', opt.blue], ['red', opt.red]].forEach(function (p) { p[1].forEach(function (h, j) { spec.push({ team: p[0], hull: h, j: j }); }); });
+  spec.sort(function (a, b) { return a.j - b.j || (a.team === 'blue' ? -1 : 1); });   // 我艦、敵方第一艘、我方第二艘…（遊戲的 SHIPS 順序）
+  var X = { blue: slots(opt.blue.length), red: slots(opt.red.length) };
+  spec.forEach(function (f, i) {
+    var H = SB_HULLS[f.hull], blue = f.team === 'blue', bow = H.len / 2;
+    W.ships.push({ id: i, team: f.team, hull: f.hull, H: H, x: X[f.team][f.j], z: blue ? W.dist / 2 + bow : -W.dist / 2 - bow, yaw: blue ? Math.PI / 2 : -Math.PI / 2,
+      yawRate: 0, spd: -1, side: 'S', hp: 1, sail: 1, masts: sbMasts(H.masts || 3), guns: { P: H.guns.P, S: H.guns.S }, crew: 1, reload: { P: 0, S: 0 }, out: false, sunk: false, sinkT: 0, foe: null, throttle: 1,
+      fired: 0, hits: 0, hitsTaken: 0, kills: 0 });
+  });
+  sbThink(W);
+  return W;
+}
+function sbMasts(n) { var m = []; for (var i = 0; i < n; i++) m.push({ up: true, cloth: 1 }); return m; }
+function sbPlayK(W, k) { return W.play === 'fun' ? SB_FUN[k] : 1; }
+function sbView(W, side) {
+  return { t: W.t, side: side, wind: W.wind, ships: W.ships.map(function (s) {
+    return { id: s.id, team: s.team, x: s.x, z: s.z, yaw: s.yaw, spd: s.spd, hp: s.hp, guns: (s.guns.P + s.guns.S) / (s.H.guns.P + s.H.guns.S), crew: s.crew, mass: s.H.mass, len: s.H.len, out: s.out, cmd: true, tgt: s.foe ? s.foe.id : null,
+      gP: s.guns.P, gS: s.guns.S, gT: s.H.guns.P + s.H.guns.S, nc: s.H.crew, sail: s.sail, vs: SB_VMAX * s.H.speed * sbPlayK(W, 'speed') * Math.sqrt(W.windSpd), vb: 0, up: s.H.upwind || 1, ag: s.H.agile * sbPlayK(W, 'agile'), spk: s.H.speed * sbPlayK(W, 'speed') };   // 推演（56_rollout.js rollShip）要的欄位
+  }) };
+}
+function sbThink(W) { W.orders = {}; ['blue', 'red'].forEach(function (side) { var o = cmdThink(sbView(W, side), W.cmd[side], W.mem[side]); for (var k in o) W.orders[k] = o[k]; }); }
+function sbFoe(W, s) {                                                     // ＝ 52_fleet.js pickFoes：命令的目標（還在打的敵艦）；不然最近的
+  var o = W.orders[s.id], t = o && o.target !== null && o.target !== undefined ? W.ships[o.target] : null;
+  if (t && t.team !== s.team && !t.out) return t;
+  var best = null, bd = 1e18;
+  W.ships.forEach(function (e) { if (e.team === s.team || e.out) return; var d = Math.hypot(e.x - s.x, e.z - s.z); if (d < bd) { bd = d; best = e; } });
+  return best;
+}
+/** 一步。 */
+function sbStep(W) {
+  var dt = SB_DT; W.t += dt; W.n = (W.n || 0) + 1;
+  if (W.n % Math.round(3 / dt) === 0) sbThink(W);                          // 指揮官每 3 秒想一次（＝ 遊戲 CMD_EVERY）
+  W.ships.forEach(function (s) { if (!s.sunk) s.foe = sbFoe(W, s); });
+  W.ships.forEach(function (s) { if (!s.sunk) sbSail(W, s, dt); });
+  sbCollide(W);
+  W.ships.forEach(function (s) { if (!s.out) sbFire(W, s, dt); });
+  W.ships.forEach(function (s) {
+    if (!s.out && (s.hp <= 0 || s.crew <= 0)) { s.out = true; s.fate = s.hp <= 0 ? '沉' : '全員倒下'; s.outT = W.t; W.log.push({ t: W.t, id: s.id, fate: s.fate }); }
+    if (s.out && s.hp <= 0 && !s.sunk && (s.sinkT += dt) > SB_CAL.sinkT) s.sunk = true;
+  });
+  ['blue', 'red'].forEach(function (tm) { if (!W.over && W.ships.filter(function (s) { return s.team === tm; }).every(function (s) { return s.out; })) W.over = { t: W.t, loser: tm, winner: tm === 'blue' ? 'red' : 'blue' }; });
+}
+/** 航行與操舵（＝ 31_sailing.js sail 的電腦那一段；手動、頂風失速、天氣不抄）。 */
+function sbSail(W, s, dt) {
+  var F = [Math.cos(s.yaw), -Math.sin(s.yaw)], deg = Math.acos(sbClamp(F[0] * W.wind[0] + F[1] * W.wind[1], -1, 1)) * 57.2958;
+  var UP = s.H.upwind || 1, dU = UP === 1 || deg <= 90 ? deg : 90 + (deg - 90) / UP, SPK = s.H.speed * sbPlayK(W, 'speed');
+  var sailFrac = s.sail;                                                    // 帆還剩多少（sbRig；＝ 遊戲的 sailFrac）
+  var target = s.out ? (s.hp <= 0 ? 0 : SB_VMAX * SPK * Math.sqrt(W.windSpd) * sailFrac * sbPolar(dU) * 0.15) : SB_VMAX * SPK * Math.sqrt(W.windSpd) * sailFrac * sbPolar(dU) * s.throttle;
+  if (s.spd < 0) s.spd = target;                                            // 開局就在走（＝ sh.spd0）
+  s.spd += (target - s.spd) * Math.min(1, dt / (s.throttle < 1 ? 6 : 20));
+  s.throttle = 1;
+  var tY = s.yaw, foe = s.foe;
+  var rmax = Math.max(0.03, 0.012 + 0.016 * s.spd / SPK) * s.H.agile * sbPlayK(W, 'agile');   // 0.03 ＝ 31_sailing.js RUD_LOW（低速靠帆轉的下限）
+  if (!s.out && foe) {
+    var st = [Math.sin(s.yaw), Math.cos(s.yaw)], dx = foe.x - s.x, dz = foe.z - s.z, d = Math.hypot(dx, dz) || 1, k = (dx * st[0] + dz * st[1]) / d;   // ＝ chooseSide
+    if (k > 0.2) s.side = 'S'; else if (k < -0.2) s.side = 'P';
+    var other = s.side === 'S' ? 'P' : 'S', present = s.guns[s.side] > 0 || !s.guns[other] ? s.side : other, sg = present === 'P' ? 1 : -1, R = sbClamp(W.dist, 90, 220);
+    tY = (sg > 0 ? Math.atan2(-dx / d, -dz / d) : Math.atan2(dx / d, dz / d)) + sg * sbClamp((d - R) / R * 1.5, -0.4, 1.2);   // ＝ 31_sailing.js 交戰操舵
+    var o = W.orders[s.id], ld = o && o.mode === 'line' ? W.ships[o.leader] : null;
+    if (ld && !ld.sunk) { var hl = cmdHelmLine(s, ld); tY = hl.yaw; s.throttle = hl.throttle; s.station = hl.station; } else s.station = null;
+    if (o && o.throttle !== undefined && !ld) s.throttle = o.throttle;
+    var av = sbAvoid(W, s); if (av !== null) tY = av;
+  }
+  var e = sbWrap(tY - s.yaw), rate = sbClamp(e * 0.5, -rmax, rmax);
+  s.yawRate += (rate - s.yawRate) * Math.min(1, dt / 2);
+  s.yaw += s.yawRate * dt;
+  s.x += Math.cos(s.yaw) * s.spd * dt; s.z += -Math.sin(s.yaw) * s.spd * dt;
+}
+/** 讓友船（粗版的 52_fleet.js friendAvoid：中心距離 < 船長 ＋ 20 m 而且在靠近 ⇒ 往遠離它那一側打 0.8 rad）。 */
+function sbAvoid(W, s) {
+  var best = null, bd = 1e9;
+  W.ships.forEach(function (o) {
+    if (o === s || o.team !== s.team || o.sunk) return;
+    var dx = o.x - s.x, dz = o.z - s.z, d = Math.hypot(dx, dz), lim = (s.H.len + o.H.len) / 2 + 20;
+    var close = ((Math.cos(s.yaw) * s.spd - Math.cos(o.yaw) * o.spd) * dx + (-Math.sin(s.yaw) * s.spd + Math.sin(o.yaw) * o.spd) * dz) / (d || 1);
+    if (d < lim && (close > 0.05 || d < lim - 15) && d < bd) { bd = d; best = { dx: dx, dz: dz }; }
+  });
+  if (!best) return null;
+  var left = [-Math.sin(s.yaw), -Math.cos(s.yaw)];
+  return s.yaw + ((best.dx * left[0] + best.dz * left[1]) > 0 ? -1 : 1) * 0.8;
+}
+/** 擦撞（粗版的 31_sailing.js collide：中心距離 < 兩艘船寬 ⇒ 推開、各掉一點速度）。 */
+function sbCollide(W) {
+  var L = W.ships.filter(function (s) { return !s.sunk; });
+  for (var i = 0; i < L.length; i++) for (var j = i + 1; j < L.length; j++) {
+    var a = L[i], b = L[j], dx = a.x - b.x, dz = a.z - b.z, d = Math.hypot(dx, dz), lim = 16;
+    if (d >= lim) continue;
+    var n = d > 1e-3 ? [dx / d, dz / d] : [0, 1], p = (lim - d) / 2;
+    a.x += n[0] * p; a.z += n[1] * p; b.x -= n[0] * p; b.z -= n[1] * p; a.spd *= 0.97; b.spd *= 0.97;
+  }
+}
+/** 開砲：兩舷各自裝填；敵艦落在那一舷正橫 ±arc、距離 ≤ rmax ⇒ 那一舷齊射（目標優先，再來最近的）；友船擋在砲線 < 9 m ⇒ 不開（＝ 52_fleet.js friendInLine）。
+ *  每一門照距離的命中率擲一次；中一發 ⇒ 船殼、砲（朝它那一舷）、人各掉一點。 */
+function sbFire(W, s, dt) {
+  ['P', 'S'].forEach(function (side) {
+    if (!s.guns[side]) return;
+    s.reload[side] -= dt; if (s.reload[side] > 0) return;
+    var nrm = side === 'S' ? [Math.sin(s.yaw), Math.cos(s.yaw)] : [-Math.sin(s.yaw), -Math.cos(s.yaw)], best = null, bs = 1e18;
+    W.ships.forEach(function (e) {
+      if (e.team === s.team || e.out) return;
+      var dx = e.x - s.x, dz = e.z - s.z, d = Math.hypot(dx, dz); if (d > SB_CAL.rmax) return;
+      if (Math.acos(sbClamp((dx * nrm[0] + dz * nrm[1]) / (d || 1), -1, 1)) > SB_CAL.arc + Math.atan2(e.H.len / 2, d)) return;   // 射界 ＋ 對方船身的半長
+      if (sbBlocked(W, s, e)) return;
+      var sc = d * (e === s.foe ? 0.5 : 1); if (sc < bs) { bs = sc; best = e; }
+    });
+    if (!best) { s.reload[side] = 0.3; return; }
+    var n = Math.round(s.guns[side] * Math.max(0.3, s.crew)), d = Math.hypot(best.x - s.x, best.z - s.z), p = sbHit(d, best), h = 0;
+    for (var k = 0; k < n; k++) if (W.rng() < p) h++;
+    s.fired += n; s.hits += h; best.hitsTaken += h;
+    if (W.fx) W.fx.push({ t: W.t, x0: s.x, z0: s.z, x1: best.x, z1: best.z, team: s.team, n: n });   // 畫面的齊射線（sb_ui.js；批次不記）
+    if (h) {
+      best.hp -= h / (SB_CAL.hullHits * Math.pow(best.H.mass / 2154, 0.7));
+      best.crew = Math.max(0, best.crew - h * SB_CAL.crewHit / best.H.crew);
+      sbRig(W, best, h);
+      var tside = ((s.x - best.x) * Math.sin(best.yaw) + (s.z - best.z) * Math.cos(best.yaw)) > 0 ? 'S' : 'P';
+      for (k = 0; k < h; k++) if (W.rng() < SB_CAL.gunHit && best.guns[tside] > 0) best.guns[tside]--;
+    }
+    s.reload[side] = SB_CAL.reload * s.H.reload / Math.max(0.3, s.crew) * (0.9 + 0.2 * W.rng()) + SB_CAL.wait * (0.45 + 1.1 * W.rng());
+  });
+}
+/** 中了 h 發 ⇒ 帆與桅（SB_CAL.sail）。 */
+function sbRig(W, s, h) {
+  var C = SB_CAL.sail;
+  for (var k = 0; k < h; k++) {
+    var st = s.masts.filter(function (m) { return m.up; }); if (!st.length) break;
+    var S = s.sail;
+    if (W.rng() < C.mastP * Math.pow(S, C.mastE)) st[(W.rng() * st.length) | 0].up = false;
+    else if (W.rng() < C.clothP * Math.pow(S, C.clothE)) { var m = st[(W.rng() * st.length) | 0]; m.cloth = Math.max(0, m.cloth - C.chunk); }
+    s.sail = s.masts.reduce(function (a, m) { return a + (m.up ? m.cloth : 0); }, 0) / s.masts.length;
+  }
+}
+function sbBlocked(W, s, e) {
+  return W.ships.some(function (o) {
+    if (o === s || o.team !== s.team || o.sunk) return false;
+    var ax = e.x - s.x, az = e.z - s.z, L2 = ax * ax + az * az, t = sbClamp(((o.x - s.x) * ax + (o.z - s.z) * az) / L2, 0, 1);
+    return t > 0.05 && t < 0.95 && Math.hypot(o.x - s.x - ax * t, o.z - s.z - az * t) < 9 + 6;
+  });
+}
+/** 跑完一場（或到 tmax 秒）⇒ 結果。 */
+function sbRun(opt, tmax) {
+  var W = sbNew(opt), n = Math.round((tmax || 900) / SB_DT);
+  for (var i = 0; i < n && !W.over; i++) sbStep(W);
+  return sbResult(W);
+}
+function sbResult(W) {
+  function left(tm) { return W.ships.filter(function (s) { return s.team === tm && !s.out; }).length; }
+  // 到時限還沒分出來 ⇒ 判定：比兩方剩下的戰力（還在打的船的 船殼 × 0.5 ＋ 砲 × 0.3 ＋ 人 × 0.2，跟指揮官的 cmdStrength 同一把尺），差不到 0.05 艘 ⇒ 和局
+  // （⛔ 沒有判定 ⇒ 4 對 4 開局 140 m、1800 秒，一格 20 場有 7–20 場和局，勝率表看不出差別）
+  function pow(tm) { return W.ships.filter(function (s) { return s.team === tm && !s.out; }).reduce(function (a, s) { return a + 0.5 * Math.max(0, s.hp) + 0.3 * (s.guns.P + s.guns.S) / (s.H.guns.P + s.H.guns.S) + 0.2 * s.crew; }, 0); }
+  var judged = false, winner = W.over ? W.over.winner : null;
+  if (!W.over) { var pb = pow('blue'), pr = pow('red'); if (Math.abs(pb - pr) >= 0.05) { winner = pb > pr ? 'blue' : 'red'; judged = true; } }
+  return { winner: winner, judged: judged, t: +W.t.toFixed(1), left: { blue: left('blue'), red: left('red') },
+    hits: { blue: W.ships.filter(function (s) { return s.team === 'blue'; }).reduce(function (a, s) { return a + s.hits; }, 0), red: W.ships.filter(function (s) { return s.team === 'red'; }).reduce(function (a, s) { return a + s.hits; }, 0) } };
+}
+// ── js/sb_ui.js ──
+// ───────────────────────── 2D 策略沙盒：畫面與批次（TASK-0551） ─────────────────────────
+// 單場：俯視畫出船（長方形，照船長）、風、命令線（誰打誰）、戰列的站位、齊射；可暫停、調速。
+// 批次：兩方的編成照上面那一列，策略兩兩對打（4 × 4），每一格 N 個種子、一半換邊（藍紅對調，抵掉開局位置的偏差）⇒ 列的策略打欄的策略的勝率、平均打多久、平均剩幾艘。
+var UI = { W: null, run: true, speed: 4, cam: null, batch: null };
+function $(id) { return document.getElementById(id); }
+function sbFleet(side) { var n = +$(side + 'N').value, h = $(side + 'H').value; var L = []; for (var i = 0; i < n; i++) L.push(h); return L; }
+function sbOpt(seed) {
+  var w = $('wind').value;
+  return { blue: sbFleet('blue'), red: sbFleet('red'), cmd: { blue: $('blueC').value, red: $('redC').value }, dist: +$('dist').value, seed: seed, play: $('play').value, wind: w === 'rnd' ? undefined : +w * Math.PI / 180 };
+}
+function sbStart() { UI.W = sbNew(sbOpt(+$('seed').value)); UI.W.fx = []; UI.cam = null; UI.run = true; $('pause').textContent = '暫停'; }
+function sbDraw() {
+  var cv = $('cv'), g = cv.getContext('2d'), W = UI.W, w = cv.width = cv.clientWidth * (window.devicePixelRatio || 1), h = cv.height = cv.clientHeight * (window.devicePixelRatio || 1);
+  g.fillStyle = '#16324a'; g.fillRect(0, 0, w, h);
+  if (!W) return;
+  var L = W.ships.filter(function (s) { return !s.sunk; }); if (!L.length) L = W.ships;
+  var x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; L.forEach(function (s) { x0 = Math.min(x0, s.x); x1 = Math.max(x1, s.x); z0 = Math.min(z0, s.z); z1 = Math.max(z1, s.z); });
+  var cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, span = Math.max(x1 - x0, z1 - z0, 200) + 160;
+  if (!UI.cam) UI.cam = { x: cx, z: cz, s: span };
+  UI.cam.x += (cx - UI.cam.x) * 0.05; UI.cam.z += (cz - UI.cam.z) * 0.05; UI.cam.s += (span - UI.cam.s) * 0.05;
+  var k = Math.min(w, h) / UI.cam.s;
+  function P(x, z) { return [w / 2 + (x - UI.cam.x) * k, h / 2 + (z - UI.cam.z) * k]; }
+  g.strokeStyle = 'rgba(255,255,255,0.06)'; g.lineWidth = 1;                // 100 m 的格線
+  var gs = 100, gx0 = Math.floor((UI.cam.x - UI.cam.s) / gs) * gs, gz0 = Math.floor((UI.cam.z - UI.cam.s) / gs) * gs;
+  for (var x = gx0; x < UI.cam.x + UI.cam.s; x += gs) { var a = P(x, 0); g.beginPath(); g.moveTo(a[0], 0); g.lineTo(a[0], h); g.stroke(); }
+  for (var z = gz0; z < UI.cam.z + UI.cam.s; z += gs) { var b = P(0, z); g.beginPath(); g.moveTo(0, b[1]); g.lineTo(w, b[1]); g.stroke(); }
+  // 風
+  g.save(); g.translate(60, 60); g.rotate(Math.atan2(W.wind[1], W.wind[0])); g.strokeStyle = '#cfe6ff'; g.lineWidth = 3; g.beginPath(); g.moveTo(-30, 0); g.lineTo(30, 0); g.lineTo(18, -9); g.moveTo(30, 0); g.lineTo(18, 9); g.stroke(); g.restore();
+  g.fillStyle = '#cfe6ff'; g.font = (12 * (window.devicePixelRatio || 1)) + 'px sans-serif'; g.fillText('風', 52, 100);
+  // 齊射
+  W.fx = (W.fx || []).filter(function (f) { return W.t - f.t < 0.6; });
+  W.fx.forEach(function (f) { var a = P(f.x0, f.z0), b = P(f.x1, f.z1); g.strokeStyle = f.team === 'blue' ? 'rgba(140,200,255,0.55)' : 'rgba(255,150,130,0.55)'; g.lineWidth = 1 + f.n / 6; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); });
+  // 命令線、站位
+  W.ships.forEach(function (s) {
+    if (s.out) return;
+    var o = W.orders[s.id];
+    if (s.foe) { var a = P(s.x, s.z), b = P(s.foe.x, s.foe.z); g.setLineDash([4, 6]); g.strokeStyle = s.team === 'blue' ? 'rgba(120,180,255,0.35)' : 'rgba(255,120,110,0.35)'; g.lineWidth = 1; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); g.setLineDash([]); }
+    if (o && o.mode === 'line' && s.station) { var c = P(s.station[0], s.station[1]); g.strokeStyle = '#ffd36b'; g.beginPath(); g.arc(c[0], c[1], 5, 0, 7); g.stroke(); var p = P(s.x, s.z); g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(c[0], c[1]); g.stroke(); }
+  });
+  // 船
+  W.ships.forEach(function (s) {
+    var p = P(s.x, s.z), len = s.H.len * k, wid = Math.max(3, 12 * k);
+    g.save(); g.translate(p[0], p[1]); g.rotate(-s.yaw);
+    g.globalAlpha = s.sunk ? 0.15 : s.out ? 0.45 : 1;
+    g.fillStyle = s.out ? '#777' : s.team === 'blue' ? '#5aa2ff' : '#ff6b5a';
+    g.beginPath(); g.moveTo(len / 2, 0); g.lineTo(len / 2 - wid, -wid / 2); g.lineTo(-len / 2, -wid / 2); g.lineTo(-len / 2, wid / 2); g.lineTo(len / 2 - wid, wid / 2); g.closePath(); g.fill();
+    g.restore(); g.globalAlpha = 1;
+    g.fillStyle = '#fff'; g.fillText(s.id + (W.orders[s.id] && W.orders[s.id].mode === 'line' ? '↳' : ''), p[0] + 8, p[1] - 8);
+  });
+  // 清單
+  $('ships').innerHTML = W.ships.map(function (s) {
+    var o = W.orders[s.id];
+    return '<div class="sr ' + s.team + (s.out ? ' out' : '') + '"><b>' + s.id + '</b> ' + s.H.name + '　船殼 ' + Math.round(Math.max(0, s.hp) * 100) + '%　砲 ' + (s.guns.P + s.guns.S) + '　人 ' + Math.round(s.crew * 100) + '%　帆 ' + Math.round(s.sail * 100) + '%' + (function (n) { return n ? '（倒桅 ' + n + '）' : ''; })(s.masts.filter(function (m) { return !m.up; }).length) + '　' + s.spd.toFixed(1) + ' m/s' +
+      (s.out ? '　<i>' + s.fate + '</i>' : '　→ ' + (s.foe ? s.foe.id : '-') + (o ? '（' + (o.mode === 'line' ? '跟 ' + o.leader : '交戰') + (o.throttle !== undefined && o.throttle < 1 ? '・慢' : '') + '）' : '')) + '</div>';
+  }).join('');
+  $('stat').textContent = W.t.toFixed(0) + ' 秒　風速 ×' + W.windSpd.toFixed(2) + (W.over ? '　' + (W.over.winner === 'blue' ? '藍' : '紅') + '方勝（' + W.over.t.toFixed(0) + ' 秒）' : '');
+}
+function sbLoop() {
+  if (UI.W && UI.run && !UI.W.over) { var n = Math.round(UI.speed / 60 / SB_DT) || 1; for (var i = 0; i < n && !UI.W.over; i++) sbStep(UI.W); }
+  sbDraw(); requestAnimationFrame(sbLoop);
+}
+/** 批次：策略兩兩對打。每一格 N 場，一半藍用列的策略、一半紅用列的策略（編成也跟著對調）。 */
+function sbBatch() {
+  if (UI.batch && !UI.batch.done) { UI.batch.stop = true; return; }
+  var N = +$('bn').value, S = CMD_STRATS, jobs = [], res = {};
+  S.forEach(function (a) { S.forEach(function (b) { res[a + '|' + b] = { w: 0, l: 0, d: 0, t: 0, left: 0, n: 0, j: 0 }; for (var i = 0; i < N; i++) jobs.push({ a: a, b: b, seed: 1000 + i, swap: i % 2 === 1 }); }); });
+  UI.batch = { jobs: jobs, res: res, i: 0, stop: false, done: false, t0: performance.now() };
+  $('bgo').textContent = '停止';
+  (function chunk() {
+    var B = UI.batch, t1 = performance.now();
+    while (B.i < B.jobs.length && performance.now() - t1 < 40 && !B.stop) {
+      var j = B.jobs[B.i++], o = sbOpt(j.seed), blue = o.blue, red = o.red;
+      if (j.swap) { o.blue = red; o.red = blue; o.cmd = { blue: j.b, red: j.a }; } else o.cmd = { blue: j.a, red: j.b };
+      var r = sbRun(o, +$('bt').value), mine = j.swap ? 'red' : 'blue', cell = B.res[j.a + '|' + j.b];
+      cell.n++; cell.t += r.t; cell.left += r.left[mine] - r.left[mine === 'blue' ? 'red' : 'blue'];
+      if (r.winner === mine) cell.w++; else if (r.winner) cell.l++; else cell.d++;
+      if (r.judged) cell.j++;
+    }
+    sbTable(B);
+    if (B.i < B.jobs.length && !B.stop) setTimeout(chunk, 0); else { B.done = true; $('bgo').textContent = '批次對打'; $('bprog').textContent += '　（' + ((performance.now() - B.t0) / 1000).toFixed(1) + ' 秒）'; }
+  })();
+}
+function sbTable(B) {
+  var S = CMD_STRATS;
+  $('bprog').textContent = B.i + '／' + B.jobs.length + ' 場';
+  $('btab').innerHTML = '<tr><th>列 打 欄</th>' + S.map(function (b) { return '<th>' + CMD_NAMES[b] + '</th>'; }).join('') + '<th>平均勝率</th></tr>' + S.map(function (a) {
+    var tot = 0, cnt = 0;
+    return '<tr><th>' + CMD_NAMES[a] + '</th>' + S.map(function (b) {
+      var c = B.res[a + '|' + b]; if (!c.n) return '<td>…</td>';
+      var wr = (c.w + c.d / 2) / c.n; if (a !== b) { tot += wr; cnt++; }
+      return '<td style="background:rgba(' + (wr > 0.5 ? '90,200,120,' : '230,100,90,') + (Math.abs(wr - 0.5) * 1.2).toFixed(2) + ')">' + Math.round(wr * 100) + '%<br><small>' + (c.t / c.n).toFixed(0) + ' 秒・差 ' + (c.left / c.n).toFixed(1) + ' 艘' + (c.j ? '・判定 ' + c.j : '') + (c.d ? '・和 ' + c.d : '') + '</small></td>';
+    }).join('') + '<td>' + (cnt ? Math.round(tot / cnt * 100) + '%' : '…') + '</td></tr>';
+  }).join('');
+}
+(function init() {
+  ['blueH', 'redH'].forEach(function (id) { $(id).innerHTML = Object.keys(SB_HULLS).map(function (k) { return '<option value="' + k + '">' + SB_HULLS[k].name + '</option>'; }).join(''); });
+  ['blueC', 'redC'].forEach(function (id) { $(id).innerHTML = CMD_STRATS.map(function (k) { return '<option value="' + k + '"' + (k === 'pair' ? ' selected' : '') + '>' + CMD_NAMES[k] + '</option>'; }).join(''); });
+  $('go').onclick = sbStart; $('pause').onclick = function () { UI.run = !UI.run; this.textContent = UI.run ? '暫停' : '繼續'; };
+  [].forEach.call(document.querySelectorAll('#spd button'), function (b) { b.onclick = function () { UI.speed = +b.dataset.s; [].forEach.call(document.querySelectorAll('#spd button'), function (x) { x.className = x === b ? 'on' : ''; }); }; });
+  $('bgo').onclick = sbBatch;
+  sbStart(); sbLoop();
+  window.__sb = { run: sbRun, opt: sbOpt, W: function () { return UI.W; }, batch: function () { return UI.batch; } };   // 量測用
+})();
+})();
+</script>
+</body>
+</html>
