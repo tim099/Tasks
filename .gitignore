@@ -21,3 +21,6 @@ _last_task_report.md
 # 寫入端的跨 process 檔案鎖（TASK-0349，`SCP_FileLock` 鎖 `_index.txt` 旁邊這一顆）——
 # 它是**開著的握把**，內容永遠是空的；不是事實來源，也不該被 commit（別的機器 pull 下來不代表誰在寫）。
 _index.txt.lock
+
+# 任務單網頁的列表索引：GitHub Actions 部署時才產生（web/README.md），本機跑出來的不入版控
+web/tasks.json
