@@ -1,0 +1,48 @@
+# 任務單網頁 ⇒ GitHub Pages。
+# 每次有人推到 master（`senate cmd task` 寫單會自動推）就重建：
+#   web/build.mjs 讀 tasks/*.md 產生 tasks.json，連同 web/ 與 tasks/ 一起部署。
+# tasks.json 只進部署產物、不 commit 回 repo —— 回寫會跟寫單端的自動推送互搶 master（non-fast-forward）。
+# Pages 設定：Settings → Pages → Build and deployment → Source 選「GitHub Actions」。
+name: Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'tasks/**'
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 寫單常常幾秒內連推好幾筆：只留最新那一次
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build site
+        run: |
+          mkdir -p _site
+          cp -r web tasks _site/
+          rm -f _site/web/build.mjs _site/web/package.json
+          node web/build.mjs --out _site/web/tasks.json
+          printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=web/"><a href="web/">任務單</a>\n' > _site/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+      - id: deployment
+        uses: actions/deploy-pages@v4

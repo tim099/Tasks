@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "parse.js 是 ES module（瀏覽器與 build.mjs 共用）；這份只是讓 Node 照 ESM 載入它，沒有任何相依套件。"
+}
