@@ -41,7 +41,8 @@ jobs:
           cp -r web tasks _site/
           rm -f _site/web/build.mjs _site/web/package.json
           node web/build.mjs --out _site/web/tasks.json
-          printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=web/"><a href="web/">任務單</a>\n' > _site/index.html
+          # 根網址轉到 web/，帶著 #/task/960 這種 hash 一起過去（meta refresh 會把 hash 丟掉，只當沒開 JS 的退路）
+          printf '<!doctype html><meta charset="utf-8"><script>location.replace("web/"+location.hash)</script><meta http-equiv="refresh" content="0; url=web/"><a href="web/">任務單</a>\n' > _site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
       - id: deployment
